@@ -74,17 +74,16 @@ pub fn key(g: Grid, k: Key) {
             return;
         }
         match k.vk {
+            // As in Feishu: Enter saves and moves down, Esc drops the edit.
             v if v == VK_RETURN.0 => {
                 edit::commit(g);
-                if k.shift {
-                    move_sel(g, 1, 0, false, false);
-                }
+                move_sel(g, 1, 0, false, false);
             }
             v if v == VK_TAB.0 => {
                 edit::commit(g);
                 move_sel(g, 0, if k.shift { -1 } else { 1 }, false, false);
             }
-            v if v == VK_ESCAPE.0 => edit::commit(g),
+            v if v == VK_ESCAPE.0 => edit::end(g),
             _ => {}
         }
         return;
@@ -128,21 +127,26 @@ pub fn key(g: Grid, k: Key) {
         }
         v if v == VK_RETURN.0 => {
             if k.shift {
-                // Shift+Enter: a new record below.
+                // Shift+Enter: a new record below, its first cell editing.
                 if let Some((rid, _, _, _)) = g.active() {
-                    edit::add_record(g, vec![], Some((rid, true)));
+                    if edit::add_record(g, vec![], Some((rid, true))).is_some() {
+                        edit::begin(g, None);
+                    }
                 }
             } else {
-                edit::begin(g, None);
+                // Enter on a selected cell moves down (Feishu).
+                move_sel(g, 1, 0, false, false);
             }
         }
         v if v == VK_F2.0 => edit::begin(g, None),
         v if v == VK_SPACE.0 => {
-            if let Some((rid, _, _, c)) = g.active() {
-                if matches!(l.cols[c].kind, FieldKind::Checkbox) {
+            // Space opens the option / date / people / record pickers and
+            // ticks checkboxes; on text it does nothing.
+            if let Some((_, _, _, c)) = g.active() {
+                let kind = &l.cols[c].kind;
+                let picker = matches!(edit::mode_of(kind), Some(EditMode::Select | EditMode::Date | EditMode::User | EditMode::Link | EditMode::Attachment));
+                if picker || matches!(kind, FieldKind::Checkbox) {
                     edit::begin(g, None);
-                } else {
-                    s.expanded.set(Some((l.table.clone(), rid)));
                 }
             }
         }

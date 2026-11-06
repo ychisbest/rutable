@@ -1492,4 +1492,95 @@ mod tests {
         let v = eval_in(&b, 0, &format!("[{tname}].[{name}].COUNTA()"));
         assert_eq!(v, Some(Value::Number(t.records.iter().filter(|r| r.cells.contains_key(&t.fields[0].id)).count() as f64)));
     }
+
+    /// The same records and formulas as a Feishu Base, against the values
+    /// Feishu computed (tests/feishu_formulas.json).
+    #[test]
+    fn matches_feishu() {
+        use crate::model::*;
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/feishu_formulas.json")).unwrap();
+        let mut b = sample::empty();
+        let opts = |names: &[&str]| -> Vec<SelectOption> {
+            names.iter().enumerate().map(|(i, n)| SelectOption { id: format!("o{n}"), name: n.to_string(), color: i as u8 }).collect()
+        };
+        let f = |id: &str, name: &str, kind: FieldKind| Field { id: id.into(), name: name.into(), kind, description: String::new() };
+        let mut t = Table {
+            id: "t".into(),
+            name: "对齐".into(),
+            fields: vec![
+                f("n", "名称", FieldKind::Text),
+                f("q", "数量", FieldKind::Number { precision: 0, thousands: false, percent: false }),
+                f("p", "单价", FieldKind::Number { precision: 2, thousands: false, percent: false }),
+                f("d", "日期", FieldKind::Date { format: DateFormat::YmdSlash, time: false }),
+                f("s", "状态", FieldKind::SingleSelect { options: opts(&["进行中", "已完成"]) }),
+                f("g", "标签", FieldKind::MultiSelect { options: opts(&["前端", "后端", "设计"]) }),
+            ],
+            records: vec![],
+            views: vec![View::new("表格", ViewKind::Grid)],
+            seq: 0,
+            option_sources: std::collections::HashMap::new(),
+        };
+        for r in fixture["records"].as_array().unwrap() {
+            let mut rec = t.new_record("usr0");
+            rec.cells.insert("n".into(), Value::Text(r["名称"].as_str().unwrap().into()));
+            rec.cells.insert("q".into(), Value::Number(r["数量"].as_f64().unwrap()));
+            rec.cells.insert("p".into(), Value::Number(r["单价"].as_f64().unwrap()));
+            let day = &r["日期"].as_str().unwrap()[..10];
+            rec.cells.insert("d".into(), Value::Date(value::parse_date(day).unwrap()));
+            if let Some(s) = r["状态"].as_array().and_then(|a| a.first()) {
+                rec.cells.insert("s".into(), Value::Options(vec![format!("o{}", s.as_str().unwrap())]));
+            }
+            if let Some(g) = r["标签"].as_array() {
+                if !g.is_empty() {
+                    rec.cells.insert("g".into(), Value::Options(g.iter().map(|x| format!("o{}", x.as_str().unwrap())).collect()));
+                }
+            }
+            t.records.push(rec);
+        }
+        b.tables = vec![t];
+        let t = &b.tables[0];
+        let shown = |v: Option<Value>| -> String {
+            match v {
+                None => String::new(),
+                Some(Value::Bool(x)) => x.to_string(),
+                Some(Value::Number(n)) => value::format_plain(n),
+                Some(v) => value::display(&b, t, &FieldKind::Text, &v),
+            }
+        };
+        let same = |got: &str, want: &str| -> bool {
+            if got == want {
+                return true;
+            }
+            match (got.parse::<f64>(), want.parse::<f64>()) {
+                (Ok(a), Ok(w)) => (a - w).abs() <= 1e-6 * w.abs().max(1.0),
+                _ => {
+                    // A whole table's FILTER comes back in Feishu's internal
+                    // record order: compare those lists as sets.
+                    let mut a: Vec<&str> = got.split(',').collect();
+                    let mut w: Vec<&str> = want.split(',').collect();
+                    a.sort();
+                    w.sort();
+                    got.eq_ignore_ascii_case(want) || (a.len() > 1 && a == w)
+                }
+            }
+        };
+        let formulas = fixture["formulas"].as_array().unwrap();
+        let mut bad = vec![];
+        for (ri, rec) in t.records.iter().enumerate() {
+            for (fi, expr) in formulas.iter().enumerate() {
+                let expr = expr.as_str().unwrap();
+                let want = match &fixture["expected"][ri][fi] {
+                    serde_json::Value::Null => String::new(),
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                let got = shown(evaluate(&b, t, rec, expr));
+                if !same(&got, &want) {
+                    bad.push(format!("F{:02} {expr} | record {ri}: rutable={got:?} feishu={want:?}", fi + 1));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{} mismatches with Feishu:\n{}", bad.len(), bad.join("\n"));
+    }
 }

@@ -50,6 +50,45 @@ pub struct Base {
     pub me: Id,
     #[serde(default)]
     pub workflows: Vec<Workflow>,
+    /// 高级权限: roles decide who may edit, read or see each table.
+    #[serde(default)]
+    pub advanced_perm: bool,
+    #[serde(default)]
+    pub roles: Vec<Role>,
+    /// Member -> role (members without one edit everything).
+    #[serde(default)]
+    pub member_roles: HashMap<Id, Id>,
+}
+
+/// What a role may do with a table.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Perm {
+    /// 可编辑
+    Edit,
+    /// 可阅读
+    Read,
+    /// 不可见
+    Hidden,
+}
+
+impl Perm {
+    pub const ALL: [Perm; 3] = [Perm::Edit, Perm::Read, Perm::Hidden];
+    pub fn label(self) -> &'static str {
+        match self {
+            Perm::Edit => "可编辑",
+            Perm::Read => "可阅读",
+            Perm::Hidden => "不可见",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Role {
+    pub id: Id,
+    pub name: String,
+    /// Per table; tables not listed get `default`.
+    pub tables: HashMap<Id, Perm>,
+    pub default: Perm,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -217,6 +256,8 @@ pub enum FieldKind {
     ModifiedBy,
     /// 条码
     Barcode,
+    /// 按钮: a press runs its action on the record.
+    Button { label: String, color: u8, action: Action },
 }
 
 /// The type tags, in the order of the type menu.
@@ -247,6 +288,7 @@ pub enum KindTag {
     ModifiedTime,
     CreatedBy,
     ModifiedBy,
+    Button,
 }
 
 impl KindTag {
@@ -276,6 +318,7 @@ impl KindTag {
             KindTag::Location,
             KindTag::Barcode,
             KindTag::AutoNumber,
+            KindTag::Button,
         ],
         &[
             KindTag::CreatedTime,
@@ -312,6 +355,7 @@ impl KindTag {
             KindTag::ModifiedTime => "最后更新时间",
             KindTag::CreatedBy => "创建人",
             KindTag::ModifiedBy => "修改人",
+            KindTag::Button => "按钮",
         }
     }
 
@@ -349,6 +393,11 @@ impl KindTag {
             KindTag::Progress => FieldKind::Progress { color: 0 },
             KindTag::Rating => FieldKind::Rating { max: 5, icon: 0 },
             KindTag::Barcode => FieldKind::Barcode,
+            KindTag::Button => FieldKind::Button {
+                label: "点击".into(),
+                color: 0,
+                action: Action::Notify { text: "按钮已点击".into() },
+            },
             KindTag::CreatedTime => FieldKind::CreatedTime { format: DateFormat::YmdSlash, time: true },
             KindTag::ModifiedTime => FieldKind::ModifiedTime { format: DateFormat::YmdSlash, time: true },
             KindTag::CreatedBy => FieldKind::CreatedBy,
@@ -390,6 +439,7 @@ impl FieldKind {
             FieldKind::CreatedBy => KindTag::CreatedBy,
             FieldKind::ModifiedBy => KindTag::ModifiedBy,
             FieldKind::Barcode => KindTag::Barcode,
+            FieldKind::Button { .. } => KindTag::Button,
         }
     }
 
@@ -404,6 +454,7 @@ impl FieldKind {
                 | FieldKind::ModifiedTime { .. }
                 | FieldKind::CreatedBy
                 | FieldKind::ModifiedBy
+                | FieldKind::Button { .. }
         )
     }
 
@@ -928,6 +979,10 @@ pub struct Table {
     pub views: Vec<View>,
     #[serde(default)]
     pub seq: u64,
+    /// Select fields whose options come from another table's field
+    /// (引用选项): field -> (table, field).
+    #[serde(default)]
+    pub option_sources: HashMap<Id, (Id, Id)>,
 }
 
 impl Table {
@@ -1117,9 +1172,27 @@ pub enum Action {
     SetField { field: Id, value: Value },
     /// 发送通知 (shown in the app's notification list)
     Notify { text: String },
+    /// 打开链接 (`{字段}` is replaced by the record's value)
+    OpenUrl { url: String },
 }
 
 impl Base {
+    /// The owner: the first member, who always edits everything.
+    pub fn owner(&self) -> Option<&Id> {
+        self.members.first().map(|m| &m.id)
+    }
+
+    /// What `member` may do with `table`.
+    pub fn perm(&self, member: &str, table: &str) -> Perm {
+        if !self.advanced_perm || self.owner().is_some_and(|o| o == member) {
+            return Perm::Edit;
+        }
+        let Some(role) = self.member_roles.get(member).and_then(|r| self.roles.iter().find(|x| &x.id == r)) else {
+            return Perm::Edit;
+        };
+        role.tables.get(table).copied().unwrap_or(role.default)
+    }
+
     pub fn table(&self, id: &str) -> Option<&Table> {
         self.tables.iter().find(|t| t.id == id)
     }
@@ -1197,6 +1270,7 @@ impl Base {
             records: vec![],
             views: vec![View::new("表格", ViewKind::Grid)],
             seq: 0,
+            option_sources: HashMap::new(),
         };
         let me = self.me.clone();
         for _ in 0..5 {
@@ -1207,6 +1281,40 @@ impl Base {
         self.tables.push(t);
         self.order.push(id.clone());
         id
+    }
+
+    /// Adds to select fields with a source (引用选项) the values of their
+    /// source field that they do not have yet.
+    pub fn sync_option_sources(&mut self) {
+        let mut adds: Vec<(Id, Id, Vec<String>)> = vec![];
+        for t in &self.tables {
+            for (fid, (st, sf)) in &t.option_sources {
+                let Some(src_t) = self.table(st) else { continue };
+                let Some(src_f) = src_t.field(sf) else { continue };
+                let mut names: Vec<String> = vec![];
+                for r in &src_t.records {
+                    if let Some(v) = query::cell(self, src_t, r, src_f) {
+                        for n in value::display(self, src_t, &src_f.kind, &v).split(',') {
+                            let n = n.trim().to_string();
+                            if !n.is_empty() && !names.contains(&n) {
+                                names.push(n);
+                            }
+                        }
+                    }
+                }
+                adds.push((t.id.clone(), fid.clone(), names));
+            }
+        }
+        for (tid, fid, names) in adds {
+            if let Some(opts) = self.table_mut(&tid).and_then(|t| t.field_mut(&fid)).and_then(|f| f.kind.options_mut()) {
+                for n in names {
+                    if !opts.iter().any(|o| o.name == n) {
+                        let c = (opts.len() % value::TAG_COLORS.len()) as u8;
+                        opts.push(SelectOption { id: new_id("opt"), name: n, color: c });
+                    }
+                }
+            }
+        }
     }
 
     /// Removes the links to records of `table` that no longer exist and

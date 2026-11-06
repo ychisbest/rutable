@@ -30,6 +30,9 @@ pub fn empty() -> Base {
         members: members(),
         me: "usr0".into(),
         workflows: vec![],
+        advanced_perm: false,
+        roles: vec![],
+        member_roles: HashMap::new(),
     };
     b.new_table("数据表");
     b
@@ -57,6 +60,7 @@ pub fn sample() -> Base {
         records: vec![],
         views: vec![View::new("全部项目", ViewKind::Grid)],
         seq: 0,
+        option_sources: HashMap::new(),
     };
 
     // 任务
@@ -79,6 +83,14 @@ pub fn sample() -> Base {
     t_project.description = "关联「项目」表".into();
     let t_left = field("剩余天数", FieldKind::Formula { expr: "IF(ISBLANK([截止日期]), \"\", DAYS([截止日期], TODAY()))".into() });
     let t_note = field("备注", FieldKind::Text);
+    let t_btn = field(
+        "操作",
+        FieldKind::Button {
+            label: "标记完成".into(),
+            color: 3,
+            action: Action::SetField { field: t_status.id.clone(), value: Value::Options(vec![status_opts[2].id.clone()]) },
+        },
+    );
     let t_url = field("文档链接", FieldKind::Url);
     let t_no = field("编号", FieldKind::AutoNumber);
     let t_created = field("创建时间", FieldKind::CreatedTime { format: DateFormat::YmdSlash, time: true });
@@ -99,6 +111,7 @@ pub fn sample() -> Base {
             t_project.clone(),
             t_done.clone(),
             t_rating.clone(),
+            t_btn.clone(),
             t_left.clone(),
             t_files.clone(),
             t_url.clone(),
@@ -109,6 +122,7 @@ pub fn sample() -> Base {
         records: vec![],
         views: vec![],
         seq: 0,
+        option_sources: HashMap::new(),
     };
 
     // Projects' records.
@@ -372,5 +386,8 @@ pub fn sample() -> Base {
         members,
         me,
         workflows: vec![],
+        advanced_perm: false,
+        roles: vec![],
+        member_roles: HashMap::new(),
     }
 }

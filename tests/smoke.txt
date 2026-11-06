@@ -4,13 +4,19 @@
 click 700 26
 wait 500
 
-# Typing into a selected cell starts editing; Enter commits.
+# Typing into a selected cell starts editing; Enter commits and moves down.
 click 400 258
 expect state :: "key_mode":1
 chars 冒烟测试任务
 expect state :: "mode":"Text"
 key enter
 expect table 3 :: 冒烟测试任务
+expect state :: "sel":[3,0,3,0,false]
+# Esc drops an edit (Feishu).
+chars 不要保存
+key escape
+expect-not table 4 :: 不要保存
+expect table 4 :: SEO 优化方案
 # Undo restores the old text.
 key ctrl+z
 expect table 3 :: 产品页接口联调
@@ -23,9 +29,14 @@ expect state :: "sel":[2,1,2,1,false]
 key escape
 expect state :: "sel":null
 
-# A single select edits from a list: Enter opens it, Down + Enter picks.
-click 590 225
+# Enter on a selected cell moves down.
+click 400 192
 key enter
+expect state :: "sel":[1,0,1,0,false]
+
+# A single select edits from a list: Space opens it, Down + Enter picks.
+click 590 225
+key space
 expect state :: "mode":"Select"
 key down
 key enter
@@ -33,7 +44,7 @@ expect table 2 :: 进行中
 
 # The date editor takes a typed date.
 click 1030 291
-key enter
+key space
 chars 2026/12/25
 key enter
 expect table 4 :: 2026/12/25
@@ -56,9 +67,10 @@ expect state :: "rows":22
 key ctrl+z
 expect state :: "rows":15
 
-# Space expands the selected record into its card; Escape closes it.
-click 400 258
-key space
+# Hovering the primary cell shows 查看, which opens the record card; Escape closes it.
+move 400 258
+wait 200
+click 477 258
 wait 300
 expect state :: "expanded":["tbl
 key escape

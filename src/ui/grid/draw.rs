@@ -103,6 +103,34 @@ pub fn paint(g: &Grid) -> Painter {
                                 let lines = if rh > 40.0 { ((rh - 8.0) / 22.0).floor().max(1.0) as usize } else { 1 };
                                 p = cells::clip(p, cx, y, col.w, rh);
                                 p = cells::draw_value(p, b, t, &f.kind, v.as_ref(), cx, y, col.w, rh, lines);
+                                if let FieldKind::Button { label, color, .. } = &f.kind {
+                                    let mid = y + rh.min(33.0) / 2.0;
+                                    let bw = text_w(label, 12.0) + 24.0;
+                                    let on = matches!(hover, Hit::CellButton(hr, hc) if hr == r && hc == c);
+                                    let bg = crate::model::value::strong_color(*color);
+                                    p = rrect(p, cx + 8.0, mid - 12.0, bw.min(col.w - 16.0), 24.0, 5.0, bg);
+                                    if on {
+                                        p = p.fill_color(rgba(0xFFFFFF33)).fill_rect(cx + 8.0, mid - 12.0, bw.min(col.w - 16.0), 24.0);
+                                    }
+                                    p = text_at(p, &ellipsize(label, col.w - 40.0, 12.0), cx + 20.0, mid, 12.0, 0xFFFFFF);
+                                }
+                                // Hovering the primary cell offers "查看" (open the record).
+                                if c == 0 && hover_row == Some(r) && editing.is_none() {
+                                    let mid = y + rh.min(33.0) / 2.0;
+                                    let bx = cx + col.w - 62.0;
+                                    let on = matches!(hover, Hit::View(hr) if hr == r);
+                                    p = rrect(p, bx, mid - 11.0, 54.0, 22.0, 4.0, if on { 0xE1EAFF } else { 0xFFFFFF });
+                                    p = cells::stroke_rrect(p, bx + 0.5, mid - 10.5, 53.0, 21.0, 4.0, BORDER, 1.0);
+                                    p = icons::draw(p, "expand", bx + 6.0, mid - 6.0, 12.0, if on { PRIMARY } else { TEXT2 });
+                                    p = text_at(p, "查看", bx + 22.0, mid, 12.0, if on { PRIMARY } else { TEXT2 });
+                                }
+                                // A selected option cell shows its drop-down arrow.
+                                if sel.is_some_and(|s| s.single() && s.ar == r && s.ac == c) && editing.is_none()
+                                    && matches!(f.kind, FieldKind::SingleSelect { .. } | FieldKind::MultiSelect { .. } | FieldKind::Date { .. })
+                                {
+                                    let mid = y + rh.min(33.0) / 2.0;
+                                    p = icons::draw(p, "chevron-down", cx + col.w - 24.0, mid - 7.0, 14.0, TEXT2);
+                                }
                                 // The selected cell's "+" (attachments, links, people).
                                 if sel.is_some_and(|s| s.single() && s.ar == r && s.ac == c)
                                     && matches!(f.kind, FieldKind::Attachment | FieldKind::Link { .. } | FieldKind::User { .. })

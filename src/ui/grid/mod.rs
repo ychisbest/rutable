@@ -162,12 +162,15 @@ pub enum Hit {
     AddField,
     RowCheck(usize),
     RowExpand(usize),
+    /// The "查看" button of the primary cell under the pointer.
+    View(usize),
     RowGrip(usize),
     RowNum(usize),
     Cell(usize, usize),
     CellCheckbox(usize, usize),
     CellAdd(usize, usize),
     CellRating(usize, usize, u8),
+    CellButton(usize, usize),
     AddRow(usize),
     Group(usize),
     StatCount,
@@ -482,11 +485,20 @@ impl Grid {
         }
         let Some(c) = self.col_at_x(&l, x) else { return Hit::None };
         let (cx, cy0, cw, ch) = self.cell_rect(&l, r, c);
+        if c == 0 && self.hover_row.get_untracked() == Some(r) && x > cx + cw - 62.0 && x < cx + cw - 8.0 && (y - (cy0 + ch.min(33.0) / 2.0)).abs() <= 11.0 {
+            return Hit::View(r);
+        }
         let mid = cy0 + ch.min(33.0) / 2.0;
         match &l.cols[c].kind {
             FieldKind::Checkbox => {
                 if x >= cx + 6.0 && x <= cx + 28.0 && (y - mid).abs() <= 11.0 {
                     return Hit::CellCheckbox(r, c);
+                }
+            }
+            FieldKind::Button { label, .. } => {
+                let w = crate::ui::cells::text_w(label, 12.0) + 24.0;
+                if x >= cx + 8.0 && x <= cx + 8.0 + w && (y - mid).abs() <= 12.0 {
+                    return Hit::CellButton(r, c);
                 }
             }
             FieldKind::Rating { max, .. } => {

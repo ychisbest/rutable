@@ -27,6 +27,7 @@ pub fn field_editor(field: Option<Id>, at: Option<usize>, x: f32, y: f32) -> imp
     let kind = signal(existing.as_ref().map(|f| f.kind.clone()).unwrap_or(FieldKind::Text));
     let desc = signal(existing.as_ref().map(|f| f.description.clone()).unwrap_or_default());
     let type_open = signal(false);
+    let source = signal(existing.as_ref().and_then(|f| s.with_table(|_, t| t.option_sources.get(&f.id).cloned()).flatten()));
     let is_primary = existing.as_ref().is_some_and(|f| s.with_table(|_, t| t.primary().map(|p| p.id == f.id)).flatten().unwrap_or(false));
     let editing_id = existing.as_ref().map(|f| f.id.clone());
     let editing_id2 = editing_id.clone();
@@ -59,9 +60,35 @@ pub fn field_editor(field: Option<Id>, at: Option<usize>, x: f32, y: f32) -> imp
             }
         }
         let d = desc.get_untracked();
-        match editing_id.clone() {
-            Some(fid) => update_field(&table_id, &fid, n, k, d),
-            None => create_field(&table_id, n, k, d, at),
+        let fid = match editing_id.clone() {
+            Some(fid) => {
+                update_field(&table_id, &fid, n, k.clone(), d);
+                Some(fid)
+            }
+            None => {
+                create_field(&table_id, n.clone(), k.clone(), d, at);
+                s.with_table(|_, t| t.field_by_name(&n).map(|f| f.id.clone())).flatten()
+            }
+        };
+        // 引用选项: the options' source.
+        if let Some(fid) = fid {
+            let src = if k.options().is_some() { source.get_untracked() } else { None };
+            let had = s.with_table(|_, t| t.option_sources.get(&fid).cloned()).flatten();
+            if src != had {
+                let tid = table_id.clone();
+                s.edit(|b| {
+                    if let Some(t) = b.table_mut(&tid) {
+                        match src {
+                            Some(x) => {
+                                t.option_sources.insert(fid.clone(), x);
+                            }
+                            None => {
+                                t.option_sources.remove(&fid);
+                            }
+                        }
+                    }
+                });
+            }
         }
         close();
     };
@@ -112,7 +139,7 @@ pub fn field_editor(field: Option<Id>, at: Option<usize>, x: f32, y: f32) -> imp
                     )
                     .child(when(move || type_open.get(), move || type_menu(type_at, type_open, kind, is_primary, editing_id2.clone()))),
             )
-            .child(dynamic(move || settings(kind)))
+            .child(dynamic(move || settings(kind, source)))
             .child(view().gap(px(6.0)).child(label("描述")).child(widgets::text_field(desc, "添加字段描述（选填）")))
             .child(
                 view()
@@ -198,7 +225,7 @@ fn type_menu(anchor: ElementRef, open: Signal<bool>, kind: Signal<FieldKind>, pr
 }
 
 /// The settings of the chosen type.
-fn settings(kind: Signal<FieldKind>) -> AnyElement {
+fn settings(kind: Signal<FieldKind>, source: Signal<Option<(Id, Id)>>) -> AnyElement {
     let s = st();
     let k = kind.get();
     let set = move |f: Box<dyn FnOnce(&mut FieldKind)>| kind.update(f);
@@ -264,7 +291,39 @@ fn settings(kind: Signal<FieldKind>) -> AnyElement {
                 348.0,
             ))
             .into_element(),
-        FieldKind::SingleSelect { options } | FieldKind::MultiSelect { options } => options_editor(kind, options),
+        FieldKind::SingleSelect { options } | FieldKind::MultiSelect { options } => {
+            // Fields of other tables an option list can come from.
+            let cur = s.cur.get_untracked();
+            let choices: Vec<((Id, Id), String)> = s.peek(|b| {
+                b.tables
+                    .iter()
+                    .filter(|t| t.id != cur)
+                    .flat_map(|t| t.fields.iter().map(move |f| ((t.id.clone(), f.id.clone()), format!("{} · {}", t.name, f.name))))
+                    .collect()
+            });
+            let c2 = choices.clone();
+            let c3 = choices.clone();
+            view()
+                .gap(px(8.0))
+                .child(label("选项来源"))
+                .child(widgets::dropdown(
+                    move || match source.get() {
+                        None => "自定义选项".to_string(),
+                        Some(x) => c2.iter().find(|c| c.0 == x).map(|c| format!("引用 {}", c.1)).unwrap_or("自定义选项".into()),
+                    },
+                    move || std::iter::once("自定义选项".to_string()).chain(c3.iter().map(|c| format!("引用 {}", c.1))).collect(),
+                    move |i| source.set(if i == 0 { None } else { choices.get(i - 1).map(|c| c.0.clone()) }),
+                    348.0,
+                ))
+                .child(dynamic(move || {
+                    if source.get().is_some() {
+                        preview("选项与引用字段的值保持同步，引用表中新增的值会自动成为选项".into()).into_element()
+                    } else {
+                        options_editor(kind, options.clone())
+                    }
+                }))
+                .into_element()
+        }
         FieldKind::Date { format, time } | FieldKind::CreatedTime { format, time } | FieldKind::ModifiedTime { format, time } => view()
             .gap(px(8.0))
             .child(label("日期格式"))
@@ -373,10 +432,121 @@ fn settings(kind: Signal<FieldKind>) -> AnyElement {
                 .into_element()
         }
         FieldKind::Formula { expr } => formula_editor(kind, expr),
+        FieldKind::Button { label: blabel, color, action } => button_settings(kind, blabel, color, action),
         FieldKind::AutoNumber => preview("新增记录时自动生成递增编号".into()).into_element(),
         FieldKind::CreatedBy | FieldKind::ModifiedBy => preview("自动记录创建人 / 最后修改人".into()).into_element(),
         _ => view().into_element(),
     }
+}
+
+fn button_settings(kind: Signal<FieldKind>, blabel: String, color: u8, action: crate::model::Action) -> AnyElement {
+    use crate::model::Action;
+    let s = st();
+    let label_sig = signal(blabel);
+    let set = move |f: Box<dyn FnOnce(&mut String, &mut u8, &mut Action)>| {
+        kind.update(|k| {
+            if let FieldKind::Button { label, color, action } = k {
+                f(label, color, action)
+            }
+        })
+    };
+    let kind_idx = match &action {
+        Action::SetField { .. } => 0,
+        Action::OpenUrl { .. } => 1,
+        Action::Notify { .. } => 2,
+    };
+    let text0 = match &action {
+        Action::OpenUrl { url } => url.clone(),
+        Action::Notify { text } => text.clone(),
+        Action::SetField { value, .. } => match value {
+            crate::model::Value::Text(t) => t.clone(),
+            v => {
+                let cur = s.cur.get_untracked();
+                s.peek(|b| b.table(&cur).map(|t| value::display(b, t, &FieldKind::Text, v))).unwrap_or_default()
+            }
+        },
+    };
+    let arg = signal(text0);
+    let target = match &action {
+        Action::SetField { field, .. } => Some(field.clone()),
+        _ => None,
+    };
+    let cur = s.cur.get_untracked();
+    let fields: Vec<(Id, String, FieldKind)> = s.peek(|b| {
+        b.table(&cur)
+            .map(|t| t.fields.iter().filter(|f| !f.kind.is_computed()).map(|f| (f.id.clone(), f.name.clone(), f.kind.clone())).collect())
+            .unwrap_or_default()
+    });
+    let f2 = fields.clone();
+    let f3 = fields.clone();
+    // The action's value, parsed for the target field.
+    let apply = move |idx: usize, target: Option<Id>, txt: String| {
+        let fields = f3.clone();
+        let cur = st().cur.get_untracked();
+        let act = match idx {
+            1 => Action::OpenUrl { url: txt },
+            2 => Action::Notify { text: txt },
+            _ => {
+                let fid = target.or_else(|| fields.first().map(|f| f.0.clone())).unwrap_or_default();
+                let mut k = fields.iter().find(|f| f.0 == fid).map(|f| f.2.clone()).unwrap_or(FieldKind::Text);
+                let v = st().peek(|b| value::parse(b, &mut k, &txt)).unwrap_or(crate::model::Value::Text(txt.clone()));
+                let _ = cur;
+                Action::SetField { field: fid, value: v }
+            }
+        };
+        set(Box::new(move |_, _, a| *a = act));
+    };
+    let apply2 = apply.clone();
+    let apply3 = apply.clone();
+    let target2 = target.clone();
+    let target3 = target.clone();
+    view()
+        .gap(px(8.0))
+        .child(label("按钮文字"))
+        .child(widgets::text_field(label_sig, "按钮文字").on_change(move |t: &str| {
+            label_sig.set(t.to_string());
+            let t = t.to_string();
+            set(Box::new(move |l, _, _| *l = t));
+        }))
+        .child(label("颜色"))
+        .child(view().flex_row().gap(px(6.0)).child(
+            (0..10u8)
+                .map(|c| {
+                    view()
+                        .size(px(22.0))
+                        .rounded(px(11.0))
+                        .bg(rgb(strong_color(c)))
+                        .border(px(if c == color { 3.0 } else { 0.0 }))
+                        .border_color(rgb(0xDEE0E3))
+                        .on_press(move || set(Box::new(move |_, col, _| *col = c)))
+                        .into_element()
+                })
+                .collect::<Vec<_>>(),
+        ))
+        .child(label("点击后"))
+        .child(widgets::dropdown(
+            move || ["修改当前记录", "打开链接", "发送通知"][kind_idx].to_string(),
+            || vec!["修改当前记录".into(), "打开链接".into(), "发送通知".into()],
+            move |i| apply(i, target2.clone(), arg.get_untracked()),
+            348.0,
+        ))
+        .child(when(move || kind_idx == 0, move || {
+            let f2 = f2.clone();
+            let f4 = f2.clone();
+            let apply = apply2.clone();
+            let tname = target3.as_ref().and_then(|t| f2.iter().find(|f| &f.0 == t).map(|f| f.1.clone())).unwrap_or("选择字段".into());
+            widgets::dropdown(
+                move || tname.clone(),
+                move || f4.iter().map(|f| f.1.clone()).collect(),
+                move |i| apply(0, f2.get(i).map(|f| f.0.clone()), arg.get_untracked()),
+                348.0,
+            )
+        }))
+        .child(widgets::text_field(arg, if kind_idx == 1 { "https://example.com/{名称}" } else { "值 / 通知内容" }).on_change(move |t: &str| {
+            arg.set(t.to_string());
+            apply3(kind_idx, target.clone(), t.to_string());
+        }))
+        .into_element()
 }
 
 fn preview(t: String) -> impl IntoElement {

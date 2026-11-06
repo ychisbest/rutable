@@ -14,6 +14,11 @@ fn run(base: &mut Base, wf_index: usize, record: &str) {
                 }
             }
         }
+        Action::OpenUrl { url } => {
+            let t = base.table(&wf.table);
+            let target = t.and_then(|t| t.record(record).map(|r| fill_template(base, t, r, url))).unwrap_or_default();
+            crate::ui::widgets::shell_open(&target);
+        }
         Action::Notify { text } => {
             let title = base
                 .table(&wf.table)
@@ -60,6 +65,46 @@ pub fn on_add(base: &mut Base, table: &str, record: &str) {
     }
 }
 
+/// `{字段名}` in `s` replaced by the record's values.
+pub fn fill_template(base: &Base, t: &crate::model::Table, r: &crate::model::Record, s: &str) -> String {
+    let mut out = s.to_string();
+    for f in &t.fields {
+        let key = format!("{{{}}}", f.name);
+        if out.contains(&key) {
+            let v = crate::model::query::cell(base, t, r, f).map(|v| crate::model::value::display(base, t, &f.kind, &v)).unwrap_or_default();
+            out = out.replace(&key, &v);
+        }
+    }
+    out
+}
+
+/// A button field was pressed on `record`.
+pub fn press_button(table: &str, field: &str, record: &str) {
+    let st = crate::ui::state::st();
+    let Some(action) = st.peek(|b| match b.table(table).and_then(|t| t.field(field)).map(|f| f.kind.clone()) {
+        Some(crate::model::FieldKind::Button { action, .. }) => Some(action),
+        _ => None,
+    }) else {
+        return;
+    };
+    match action {
+        Action::SetField { field: target, value } => {
+            st.set_cells(table, &[(record.to_string(), target, Some(value))]);
+            st.toast("已执行按钮操作");
+        }
+        Action::OpenUrl { url } => {
+            let target = st.peek(|b| b.table(table).and_then(|t| t.record(record).map(|r| fill_template(b, t, r, &url)))).unwrap_or_default();
+            crate::ui::widgets::shell_open(&target);
+        }
+        Action::Notify { text } => {
+            let title = st.peek(|b| b.table(table).map(|t| crate::model::value::record_title(b, t, record))).unwrap_or_default();
+            let msg = format!("{title}：{text}");
+            st.notices.update(|n| n.insert(0, msg.clone()));
+            st.toast(&msg);
+        }
+    }
+}
+
 pub fn describe(base: &Base, wf: &crate::model::Workflow) -> String {
     let t = base.table(&wf.table);
     let fname = |id: &str| t.and_then(|t| t.field(id)).map(|f| f.name.clone()).unwrap_or("?".into());
@@ -75,6 +120,7 @@ pub fn describe(base: &Base, wf: &crate::model::Workflow) -> String {
             format!("将「{}」设为 {}", fname(field), if shown.is_empty() { "空".into() } else { shown })
         }
         Action::Notify { text } => format!("发送通知：{text}"),
+        Action::OpenUrl { url } => format!("打开链接：{url}"),
     };
     let _ = Value::Bool(true);
     format!("{trig} → {act}")

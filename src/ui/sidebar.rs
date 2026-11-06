@@ -119,6 +119,7 @@ pub fn sidebar() -> impl IntoElement {
                             }
                         })
                         .filter(|(_, n, _, _)| q.is_empty() || n.to_lowercase().contains(&q))
+                        .filter(|(id, _, dash, _)| *dash || b.perm(&b.me, id) != crate::model::Perm::Hidden)
                         .collect()
                 });
                 items
@@ -135,6 +136,7 @@ pub fn sidebar() -> impl IntoElement {
                 .p(px(8.0))
                 .gap(px(2.0))
                 .child(bottom_item("robot", "自动化流程", move || st().popup.set(Some(Popup::Workflows))))
+                .child(bottom_item("users", "高级权限", move || st().popup.set(Some(Popup::Permissions))))
                 .child(bottom_item("keyboard", "快捷键", move || st().popup.set(Some(Popup::Shortcuts)))),
         )
 }

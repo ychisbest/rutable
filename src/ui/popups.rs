@@ -42,6 +42,9 @@ fn build(p: Popup) -> Option<AnyElement> {
         Popup::More { x, y } => more_menu(x, y).into_element(),
         Popup::Shortcuts => shortcuts().into_element(),
         Popup::Workflows => workflows().into_element(),
+        Popup::Permissions => permissions().into_element(),
+        Popup::Share => share().into_element(),
+        Popup::Identity { x, y } => identity(x, y).into_element(),
         Popup::Confirm { title, text: body, action } => confirm(title, body, action).into_element(),
     })
 }
@@ -1430,13 +1433,14 @@ fn shortcuts() -> impl IntoElement {
         ("移动选中单元格", "↑ ↓ ← →"),
         ("扩展选区", "Shift + 方向键"),
         ("移动到边缘", "Ctrl + 方向键"),
-        ("编辑单元格", "Enter / F2 / 直接输入"),
-        ("确认编辑", "Enter"),
+        ("编辑单元格", "直接输入 / 双击 / 再次单击 / F2"),
+        ("打开选项、日期、人员选择", "Space"),
+        ("向下移动 / 确认编辑并下移", "Enter"),
         ("确认并移到右侧", "Tab"),
-        ("退出编辑", "Esc"),
-        ("单元格内换行", "Shift + Enter"),
+        ("取消编辑", "Esc"),
+        ("单元格内换行", "Shift + Enter（编辑中）"),
         ("在下方插入记录", "Shift + Enter"),
-        ("展开记录", "Space"),
+        ("展开记录", "悬停首列点击「查看」"),
         ("清空单元格", "Delete / Backspace"),
         ("复制 / 剪切 / 粘贴", "Ctrl + C / X / V"),
         ("向下填充", "Ctrl + D"),
@@ -1615,5 +1619,269 @@ fn workflows() -> impl IntoElement {
             }
             out
         })),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// 高级权限, sharing, identity.
+
+fn perm_dropdown(cur: crate::model::Perm, pick: impl Fn(crate::model::Perm) + Clone + 'static) -> impl IntoElement {
+    widgets::dropdown(
+        move || cur.label().to_string(),
+        || crate::model::Perm::ALL.iter().map(|p| p.label().to_string()).collect(),
+        move |i| pick(crate::model::Perm::ALL[i]),
+        110.0,
+    )
+}
+
+fn permissions() -> impl IntoElement {
+    use crate::model::{Perm, Role};
+    let s = st();
+    modal(
+        720.0,
+        "高级权限",
+        close,
+        scroll().max_h(px(620.0)).px(px(20.0)).pb(px(20.0)).child(dynamic(move || {
+            let (on, roles, members, tables, member_roles, owner) = s.read(|b| {
+                (
+                    b.advanced_perm,
+                    b.roles.clone(),
+                    b.members.clone(),
+                    b.tables.iter().map(|t| (t.id.clone(), t.name.clone())).collect::<Vec<_>>(),
+                    b.member_roles.clone(),
+                    b.owner().cloned().unwrap_or_default(),
+                )
+            });
+            let mut out: Vec<AnyElement> = vec![];
+            out.push(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.0))
+                    .py(px(8.0))
+                    .child(text("启用高级权限").text_size(px(14.0)).font_weight(FontWeight::MEDIUM).text_color(rgb(TEXT)))
+                    .child(widgets::switch(move || on, move || st().edit(|b| b.advanced_perm = !b.advanced_perm)))
+                    .child(text("启用后，按角色控制成员对每个数据表的编辑、阅读或不可见权限；所有者始终可管理").text_size(px(12.0)).text_color(rgb(TEXT3)))
+                    .into_element(),
+            );
+            if !on {
+                return out;
+            }
+            out.push(widgets::menu_title("角色").into_element());
+            for role in roles.iter() {
+                let rid = role.id.clone();
+                let name = signal(role.name.clone());
+                let rid_name = rid.clone();
+                let rid_del = rid.clone();
+                let rid_def = rid.clone();
+                let mut rows: Vec<AnyElement> = vec![
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(widgets::text_field(name, "角色名称").w(px(200.0)).on_change(move |t: &str| {
+                            name.set(t.to_string());
+                            let (id, t) = (rid_name.clone(), t.to_string());
+                            st().edit(|b| {
+                                if let Some(r) = b.roles.iter_mut().find(|r| r.id == id) {
+                                    r.name = t;
+                                }
+                            });
+                        }))
+                        .child(text("其他数据表").text_size(px(13.0)).text_color(rgb(TEXT2)))
+                        .child(perm_dropdown(role.default, move |p| {
+                            let id = rid_def.clone();
+                            st().edit(|b| {
+                                if let Some(r) = b.roles.iter_mut().find(|r| r.id == id) {
+                                    r.default = p;
+                                }
+                            });
+                        }))
+                        .child(view().flex_1())
+                        .child(widgets::link_button("删除角色", move || {
+                            let id = rid_del.clone();
+                            st().edit(|b| {
+                                b.roles.retain(|r| r.id != id);
+                                b.member_roles.retain(|_, r| *r != id);
+                            });
+                        }))
+                        .into_element(),
+                ];
+                for (tid, tname) in &tables {
+                    let cur = role.tables.get(tid).copied().unwrap_or(role.default);
+                    let (rid, tid) = (rid.clone(), tid.clone());
+                    rows.push(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .pl(px(16.0))
+                            .child(super::icons::icon("table", 14.0, PRIMARY))
+                            .child(text(tname.clone()).w(px(180.0)).text_size(px(13.0)).text_color(rgb(TEXT)))
+                            .child(perm_dropdown(cur, move |p| {
+                                let (rid, tid) = (rid.clone(), tid.clone());
+                                st().edit(|b| {
+                                    if let Some(r) = b.roles.iter_mut().find(|r| r.id == rid) {
+                                        r.tables.insert(tid, p);
+                                    }
+                                });
+                            }))
+                            .into_element(),
+                    );
+                }
+                out.push(view().p(px(12.0)).mb(px(10.0)).rounded(px(8.0)).border_1().border_color(rgb(BORDER)).gap(px(8.0)).child(rows).into_element());
+            }
+            out.push(
+                view()
+                    .flex_row()
+                    .child(widgets::link_button("+ 添加角色", move || {
+                        st().edit(|b| {
+                            let n = b.roles.len() + 1;
+                            b.roles.push(Role { id: new_id("rol"), name: format!("角色{n}"), tables: Default::default(), default: Perm::Read });
+                        })
+                    }))
+                    .into_element(),
+            );
+            out.push(widgets::menu_title("成员").into_element());
+            for m in members {
+                let is_owner = m.id == owner;
+                let cur_role = member_roles.get(&m.id).cloned();
+                let role_name = cur_role.as_ref().and_then(|r| roles.iter().find(|x| &x.id == r)).map(|r| r.name.clone()).unwrap_or("全部可编辑".into());
+                let roles2 = roles.clone();
+                let roles3 = roles.clone();
+                let mid = m.id.clone();
+                out.push(
+                    view()
+                        .h(px(40.0))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(widgets::avatar_el(&m.name, m.color, 26.0))
+                        .child(text(m.name.clone()).w(px(160.0)).text_size(px(14.0)).text_color(rgb(TEXT)))
+                        .child(if is_owner {
+                            text("所有者").text_size(px(13.0)).text_color(rgb(TEXT2)).into_element()
+                        } else {
+                            widgets::dropdown(
+                                move || role_name.clone(),
+                                move || std::iter::once("全部可编辑".to_string()).chain(roles2.iter().map(|r| r.name.clone())).collect(),
+                                move |i| {
+                                    let mid = mid.clone();
+                                    let rid = if i == 0 { None } else { roles3.get(i - 1).map(|r| r.id.clone()) };
+                                    st().edit(|b| match rid {
+                                        Some(r) => {
+                                            b.member_roles.insert(mid, r);
+                                        }
+                                        None => {
+                                            b.member_roles.remove(&mid);
+                                        }
+                                    });
+                                },
+                                160.0,
+                            )
+                            .into_element()
+                        })
+                        .into_element(),
+                );
+            }
+            out
+        })),
+    )
+}
+
+fn share() -> impl IntoElement {
+    let s = st();
+    let rows = s.read(|b| {
+        b.members
+            .iter()
+            .map(|m| {
+                let role = if Some(&m.id) == b.owner() {
+                    "所有者".to_string()
+                } else if !b.advanced_perm {
+                    "可编辑".to_string()
+                } else {
+                    b.member_roles.get(&m.id).and_then(|r| b.roles.iter().find(|x| &x.id == r)).map(|r| r.name.clone()).unwrap_or("可编辑".into())
+                };
+                (m.name.clone(), m.color, role)
+            })
+            .collect::<Vec<_>>()
+    });
+    let path = super::state::data_path().to_string_lossy().to_string();
+    let p2 = path.clone();
+    modal(
+        520.0,
+        "分享",
+        close,
+        view()
+            .px(px(20.0))
+            .pb(px(20.0))
+            .gap(px(10.0))
+            .child(text("协作者").text_size(px(13.0)).text_color(rgb(TEXT2)))
+            .child(
+                rows.into_iter()
+                    .map(|(n, c, r)| {
+                        view()
+                            .h(px(40.0))
+                            .flex_row()
+                            .items_center()
+                            .gap(px(10.0))
+                            .child(widgets::avatar_el(&n, c, 26.0))
+                            .child(text(n).flex_1().text_size(px(14.0)).text_color(rgb(TEXT)))
+                            .child(text(r).text_size(px(13.0)).text_color(rgb(TEXT2)))
+                            .into_element()
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .child(widgets::separator())
+            .child(text("多维表格文件（放在共享文件夹中，多个窗口打开同一文件会自动同步修改）").text_size(px(12.0)).text_color(rgb(TEXT3)))
+            .child(text(path).text_size(px(12.0)).text_color(rgb(TEXT)))
+            .child(
+                view()
+                    .flex_row()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(widgets::button("高级权限", move || st().popup.set(Some(Popup::Permissions))))
+                    .child(widgets::primary_button("复制文件路径", move || {
+                        set_clipboard(p2.clone());
+                        st().toast("已复制文件路径");
+                        close();
+                    })),
+            ),
+    )
+}
+
+fn identity(x: f32, y: f32) -> impl IntoElement {
+    let s = st();
+    let (members, me) = s.read(|b| (b.members.clone(), b.me.clone()));
+    popover_at(
+        (x - 220.0).max(8.0),
+        y,
+        240.0,
+        close,
+        view().child(menu_title("切换身份（预览权限效果）")).child(
+            members
+                .into_iter()
+                .map(|m| {
+                    let id = m.id.clone();
+                    let on = m.id == me;
+                    view()
+                        .h(px(38.0))
+                        .mx(px(4.0))
+                        .px(px(10.0))
+                        .rounded(px(6.0))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .hover(|s| s.bg(rgb(HOVER)))
+                        .on_press(move || {
+                            close();
+                            st().switch_identity(&id);
+                        })
+                        .child(widgets::avatar_el(&m.name, m.color, 24.0))
+                        .child(text(m.name.clone()).flex_1().text_size(px(14.0)).text_color(rgb(TEXT)))
+                        .child(if on { super::icons::icon("check", 16.0, PRIMARY).into_element() } else { view().into_element() })
+                        .into_element()
+                })
+                .collect::<Vec<_>>(),
+        ),
     )
 }

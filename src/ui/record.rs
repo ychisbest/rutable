@@ -254,6 +254,27 @@ pub fn value_input(table: Id, field: Id, kind: FieldKind, slot: Slot) -> AnyElem
     let get = slot.get.clone();
     let set = slot.set.clone();
     let box_style = |v: View| v.min_h(px(36.0)).px(px(10.0)).rounded(px(6.0)).border_1().border_color(rgb(BORDER)).bg(rgb(BG));
+    if let FieldKind::Button { label, color, .. } = &kind {
+        let (t, f) = (table.clone(), field.clone());
+        return view()
+            .flex_row()
+            .child(
+                view()
+                    .h(px(32.0))
+                    .px(px(14.0))
+                    .rounded(px(6.0))
+                    .bg(rgb(crate::model::value::strong_color(*color)))
+                    .hover(|s| s.opacity(0.85))
+                    .justify_center()
+                    .on_press(move || {
+                        if let Some((_, r)) = st().expanded.get_untracked() {
+                            crate::ui::automations::press_button(&t, &f, &r);
+                        }
+                    })
+                    .child(text(label.clone()).text_size(px(14.0)).text_color(rgb(0xFFFFFF))),
+            )
+            .into_element();
+    }
     if kind.is_computed() {
         let k = kind.clone();
         let t = table.clone();

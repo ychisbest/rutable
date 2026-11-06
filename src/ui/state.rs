@@ -29,6 +29,9 @@ pub enum Popup {
     More { x: f32, y: f32 },
     Shortcuts,
     Workflows,
+    Permissions,
+    Share,
+    Identity { x: f32, y: f32 },
     Confirm { title: String, text: String, action: Confirm },
 }
 
@@ -67,6 +70,8 @@ pub struct St {
     saving: Stored<bool>,
     dirty_at: Stored<i64>,
     toast_until: Stored<i64>,
+    file_time: Stored<Option<std::time::SystemTime>>,
+    ticks: Stored<u64>,
 }
 
 thread_local! {
@@ -131,6 +136,8 @@ impl St {
             saving: stored(false),
             dirty_at: stored(0),
             toast_until: stored(0),
+            file_time: stored(None),
+            ticks: stored(0),
         };
         ST.with(|x| *x.borrow_mut() = Some(s));
         s
@@ -158,6 +165,17 @@ impl St {
         });
         self.redo.with(|r| r.clear());
         let out = self.doc.with(f);
+        // 高级权限: an identity that may only read the open table changes nothing.
+        if self.read_only() {
+            let prev = self.undo.with(|u| u.pop());
+            if let Some(prev) = prev {
+                self.doc.with(|b| *b = prev);
+            }
+            self.toast("当前身份对该数据表只有阅读权限");
+            self.rev.update(|r| *r += 1);
+            return out;
+        }
+        self.doc.with(|b| b.sync_option_sources());
         self.changed();
         out
     }
@@ -166,6 +184,21 @@ impl St {
         query::invalidate();
         self.rev.update(|r| *r += 1);
         self.schedule_save();
+    }
+
+    /// The current identity may not edit the open table.
+    pub fn read_only(&self) -> bool {
+        let cur = self.cur.get_untracked();
+        self.doc.with(|b| b.table(&cur).is_some() && b.perm(&b.me, &cur) != crate::model::Perm::Edit)
+    }
+
+    /// Acts as `member` (高级权限 preview); not an undoable change.
+    pub fn switch_identity(&self, member: &str) {
+        self.doc.with(|b| b.me = member.to_string());
+        self.changed();
+        self.fix_selection();
+        let name = self.peek(|b| b.member_name(member));
+        self.toast(&format!("当前身份：{name}"));
     }
 
     pub fn can_undo(&self) -> bool {
@@ -239,6 +272,34 @@ impl St {
         if self.toast.get_untracked().is_some() && now > self.toast_until.with(|t| *t) {
             self.toast.set(None);
         }
+        // Another window saved the document: take its changes.
+        let tick = self.ticks.with(|t| {
+            *t += 1;
+            *t
+        });
+        if tick % 4 == 0 && !self.saving.with(|s| *s) {
+            let path = data_path();
+            let m = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            let known = self.file_time.with(|t| *t);
+            if m.is_some() && known.is_some() && m != known {
+                self.file_time.with(|t| *t = m);
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    if let Ok(b) = serde_json::from_str::<Base>(&text) {
+                        let me = self.peek(|x| x.me.clone());
+                        self.doc.with(|d| {
+                            *d = b;
+                            d.me = me;
+                        });
+                        query::invalidate();
+                        self.rev.update(|r| *r += 1);
+                        self.fix_selection();
+                        self.toast("已同步其他窗口的修改");
+                    }
+                }
+            } else if known.is_none() {
+                self.file_time.with(|t| *t = m);
+            }
+        }
     }
 
     pub fn save_now(&self) {
@@ -249,6 +310,8 @@ impl St {
             if std::fs::write(&tmp, json).is_ok() {
                 let _ = std::fs::rename(&tmp, &path);
             }
+            let m = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            self.file_time.with(|t| *t = m);
         }
     }
 

@@ -128,11 +128,17 @@ pub fn top_bar() -> impl IntoElement {
                         .child(text(move || s.notices.get().len().to_string()).text_size(px(10.0)).text_color(rgb(0xFFFFFF)))
                 })),
         )
-        .child(widgets::primary_button("分享", move || {
-            st().toast("已复制多维表格链接（本地文档）");
-            set_clipboard(super::state::data_path().to_string_lossy().to_string());
-        }))
-        .child(widgets::avatar_el("我", 0, 30.0))
+        .child(widgets::primary_button("分享", move || st().popup.set(Some(Popup::Share))))
+        .child({
+            let at = element_ref();
+            view()
+                .element_ref(&at)
+                .on_press(move || widgets::below(at, move |x, y| st().popup.set(Some(Popup::Identity { x, y }))))
+                .child(dynamic(move || {
+                    let (name, color) = s.read(|b| b.member(&b.me).map(|m| (m.name.clone(), m.color)).unwrap_or(("我".into(), 0)));
+                    widgets::avatar_el(&name, color, 30.0)
+                }))
+        })
 }
 
 pub fn view_tabs() -> impl IntoElement {
@@ -305,6 +311,7 @@ pub fn toolbar(kind: ViewKind) -> impl IntoElement {
             move || hidden() > 0,
             move |x, y| st().popup.set(Some(Popup::Fields { x, y })),
         ))
+        .child(widgets::tool_button("form", || "视图配置".into(), || false, move |x, y| st().popup.set(Some(Popup::More { x, y }))))
         .child(widgets::tool_button(
             "filter",
             move || if filters() > 0 { format!("{} 个筛选条件", filters()) } else { "筛选".into() },
@@ -334,7 +341,6 @@ pub fn toolbar(kind: ViewKind) -> impl IntoElement {
                 st().popup.set(Some(Popup::Colors { x, y }))
             })
         }))
-        .child(widgets::tool_button("more", || "".into(), || false, move |x, y| st().popup.set(Some(Popup::More { x, y }))))
         .child(view().flex_1())
         .child(dynamic(move || {
             if s.search_open.get() {

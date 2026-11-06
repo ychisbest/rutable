@@ -34,7 +34,7 @@ pub fn check_box_dyn(on: impl Fn() -> bool + Clone + 'static) -> impl IntoElemen
         .child(icons::icon_dyn(|| "check", 12.0, move || if on3() { 0xFFFFFF } else { BG }))
 }
 
-pub fn tag_el(name: &str, bg: u32, fg: u32) -> impl IntoElement {
+pub fn tag_el(name: &str, bg: u32, fg: u32) -> View {
     view()
         .h(px(22.0))
         .px(px(8.0))
@@ -45,7 +45,7 @@ pub fn tag_el(name: &str, bg: u32, fg: u32) -> impl IntoElement {
         .child(text(name.to_string()).text_size(px(12.0)).text_color(rgb(fg)).number_of_lines(1u32))
 }
 
-pub fn avatar_el(name: &str, color: u8, size_pt: f32) -> impl IntoElement {
+pub fn avatar_el(name: &str, color: u8, size_pt: f32) -> View {
     let initial: String = name.chars().last().map(|c| c.to_string()).unwrap_or_default();
     view()
         .size(px(size_pt))

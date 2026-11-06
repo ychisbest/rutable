@@ -147,6 +147,7 @@ pub fn import_rows(name: &str, rows: Vec<Vec<String>>) -> Id {
             records: vec![],
             views: vec![View::new("表格", ViewKind::Grid)],
             seq: 0,
+            option_sources: std::collections::HashMap::new(),
         };
         let me = b.me.clone();
         let snapshot = b.clone();

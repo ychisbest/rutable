@@ -151,7 +151,7 @@ pub fn GridView() -> impl IntoElement {
                     }
                     let h = g.hit(x, y);
                     let row = match &h {
-                        Hit::Cell(r, _) | Hit::CellCheckbox(r, _) | Hit::CellAdd(r, _) | Hit::CellRating(r, _, _)
+                        Hit::Cell(r, _) | Hit::View(r) | Hit::CellButton(r, _) | Hit::CellCheckbox(r, _) | Hit::CellAdd(r, _) | Hit::CellRating(r, _, _)
                         | Hit::RowCheck(r) | Hit::RowExpand(r) | Hit::RowGrip(r) | Hit::RowNum(r) => Some(*r),
                         _ => None,
                     };
@@ -290,7 +290,7 @@ fn on_down(g: Grid, x: f32, y: f32) {
                 });
             }
         }
-        Hit::RowExpand(r) => {
+        Hit::View(r) | Hit::RowExpand(r) => {
             if let Some(i) = l.records.iter().position(|&ri| Some(ri) == l.record_at(r)) {
                 s.expanded.set(Some((l.table.clone(), l.record_ids[i].clone())));
             }
@@ -324,6 +324,13 @@ fn on_down(g: Grid, x: f32, y: f32) {
                 g.drag.set(Drag::Select);
             }
             s.checked.set(vec![]);
+        }
+        Hit::CellButton(r, c) => {
+            g.sel.set(Some(Sel::cell(r, c)));
+            if let Some(ri) = l.record_at(r) {
+                let rid = s.peek(|b| b.table(&l.table).map(|t| t.records[ri].id.clone())).unwrap_or_default();
+                crate::ui::automations::press_button(&l.table, &l.cols[c].field, &rid);
+            }
         }
         Hit::CellCheckbox(r, c) => {
             g.sel.set(Some(Sel::cell(r, c)));

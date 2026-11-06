@@ -32,6 +32,7 @@ pub fn path(name: &str) -> &'static str {
         "clock" => "M12 2a10 10 0 1 0 0.01 0 M12 6v6l4 2",
         "userpen" => "M11 15H8a4 4 0 0 0-4 4v2 M10 3a4 4 0 1 0 0.01 0 M17.5 13.5l3 3L15 22h-3v-3z",
         "plus" => "M12 5v14 M5 12h14",
+        "button" => "M5 7h14a3 3 0 0 1 3 3v4a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3v-4a3 3 0 0 1 3-3z M12 17l2 5 1-3 3-1-6-1",
         "minus" => "M5 12h14",
         "x" => "M18 6L6 18 M6 6l12 12",
         "check" => "M20 6L9 17l-5-5",
@@ -117,6 +118,7 @@ pub fn kind_icon(tag: KindTag) -> &'static str {
         KindTag::Barcode => "barcode",
         KindTag::CreatedTime | KindTag::ModifiedTime => "clock",
         KindTag::CreatedBy | KindTag::ModifiedBy => "userpen",
+        KindTag::Button => "button",
     }
 }
 
