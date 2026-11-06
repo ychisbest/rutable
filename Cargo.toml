@@ -1,0 +1,53 @@
+[package]
+name = "rutable"
+version = "0.1.0"
+edition = "2024"
+description = "A multi-dimensional table (多维表格) desktop app for Windows, built with NSH"
+
+[[bin]]
+name = "rutable"
+path = "src/main.rs"
+
+[dependencies]
+nsh-core = "0.3"
+nsh-base = { version = "0.3", default-features = false }
+nsh-platform-windows = { version = "0.3", default-features = false }
+async-channel = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+log = "0.4"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    "Win32_System_Threading",
+    "Win32_Networking_WinSock",
+    "Win32_UI_Controls",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+
+[workspace]
+members = [".", "driver"]
