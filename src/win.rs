@@ -192,7 +192,10 @@ fn intercept_key(msg: &MSG) -> bool {
 
 /// Wheel turns over the grid scroll it.
 fn intercept_wheel(msg: &MSG) -> bool {
-    if msg.message != WM_MOUSEWHEEL && msg.message != WM_MOUSEHWHEEL {
+    const WM_POINTERWHEEL: u32 = 0x024E;
+    const WM_POINTERHWHEEL: u32 = 0x024F;
+    let horizontal = msg.message == WM_MOUSEHWHEEL || msg.message == WM_POINTERHWHEEL;
+    if ![WM_MOUSEWHEEL, WM_MOUSEHWHEEL, WM_POINTERWHEEL, WM_POINTERHWHEEL].contains(&msg.message) {
         return false;
     }
     if !GRID_WHEEL.load(Ordering::Relaxed) {
@@ -215,7 +218,7 @@ fn intercept_wheel(msg: &MSG) -> bool {
     let delta = ((msg.wParam.0 >> 16) & 0xFFFF) as i16 as f32 / 120.0;
     let step = 3.0 * 36.0;
     let shift = key_down(VK_SHIFT.0);
-    if msg.message == WM_MOUSEHWHEEL {
+    if horizontal {
         send(Cmd::Wheel(delta * step, 0.0));
     } else if shift {
         send(Cmd::Wheel(-delta * step, 0.0));

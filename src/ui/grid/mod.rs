@@ -200,6 +200,7 @@ pub struct Grid {
 
 thread_local! {
     static GRID: std::cell::RefCell<Option<Grid>> = const { std::cell::RefCell::new(None) };
+    static GRID_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 pub fn grid() -> Option<Grid> {
@@ -299,6 +300,16 @@ impl Grid {
             list_index: signal(0),
         };
         GRID.with(|x| *x.borrow_mut() = Some(g));
+        let id = GRID_ID.with(|i| {
+            i.set(i.get() + 1);
+            i.get()
+        });
+        cleanup(move || {
+            if GRID_ID.with(|i| i.get()) == id {
+                GRID.with(|x| *x.borrow_mut() = None);
+                crate::win::set_key_mode(crate::win::mode::FREE);
+            }
+        });
         g
     }
 

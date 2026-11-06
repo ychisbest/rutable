@@ -161,7 +161,7 @@ fn type_menu(anchor: ElementRef, open: Signal<bool>, kind: Signal<FieldKind>, pr
                                     let t = *t;
                                     let editing = editing.clone();
                                     view()
-                                        .w(px(170.0))
+                                        .w(px(164.0))
                                         .h(px(34.0))
                                         .px(px(10.0))
                                         .rounded(px(6.0))

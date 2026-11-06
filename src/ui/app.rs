@@ -24,7 +24,10 @@ pub fn RutableApp() -> impl IntoElement {
                         grid::keys::key(g, k);
                     }
                 }
-                win::Cmd::Wheel(dx, dy) => super::wheel::dispatch(dx, dy),
+                win::Cmd::Wheel(dx, dy) => {
+                    super::automation::log(format!("wheel {dx} {dy}"));
+                    super::wheel::dispatch(dx, dy)
+                }
                 win::Cmd::Automation(req, tx) => {
                     let _ = tx.send(automation::handle(&req));
                 }

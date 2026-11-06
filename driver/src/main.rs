@@ -352,6 +352,11 @@ fn run(line: &str, port: u16) {
             move_to(&w, n(0), n(1));
             send(&[mouse(MOUSEEVENTF_WHEEL, (n(2) * 120.0) as i32)]);
         }
+        "hwheel" => {
+            let w = Win::get();
+            move_to(&w, n(0), n(1));
+            send(&[mouse(MOUSEEVENTF_HWHEEL, (n(2) * 120.0) as i32)]);
+        }
         "key" => {
             for combo in rest.split_whitespace() {
                 press_combo(combo);
