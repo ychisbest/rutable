@@ -15,6 +15,10 @@
 //!   wait MS
 //!   shot FILE.png               the window's client area
 //!   state [QUERY]               the app's state over the automation port
+//!   expect QUERY :: TEXT        fails unless the answer to QUERY contains TEXT
+//!   expect-not QUERY :: TEXT    fails if it does
+//!
+//! `rutable-driver --script FILE` runs a scenario and exits 1 on a failure.
 //!   close                       closes the window
 
 use std::{
@@ -264,17 +268,23 @@ fn screenshot(w: &Win, file: &str) {
     }
 }
 
-fn state(query: &str, port: u16) {
+fn ask(query: &str, port: u16) -> String {
     match std::net::TcpStream::connect(("127.0.0.1", port)) {
         Ok(mut s) => {
             let _ = writeln!(s, "{}", if query.is_empty() { "state" } else { query });
             let mut line = String::new();
             let _ = BufReader::new(s).read_line(&mut line);
-            println!("{}", line.trim_end());
+            line.trim_end().to_string()
         }
-        Err(e) => println!("{{\"error\":\"no automation port: {e}\"}}"),
+        Err(e) => format!("{{\"error\":\"no automation port: {e}\"}}"),
     }
 }
+
+fn state(query: &str, port: u16) {
+    println!("{}", ask(query, port));
+}
+
+static FAILED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 fn run(line: &str, port: u16) {
     let line = line.trim();
@@ -380,6 +390,20 @@ fn run(line: &str, port: u16) {
             screenshot(&Win::get(), rest.trim());
         }
         "state" => state(rest.trim(), port),
+        // expect QUERY :: TEXT  — the answer to QUERY contains TEXT.
+        "expect" | "expect-not" => {
+            let (q, want) = rest.split_once("::").unwrap_or((rest, ""));
+            let want = want.trim();
+            let answer = ask(q.trim(), port);
+            let ok = answer.contains(want) == (cmd == "expect");
+            if !ok {
+                FAILED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            println!("{} {cmd} [{}] {want}", if ok { "PASS" } else { "FAIL" }, q.trim());
+            if !ok {
+                println!("     got: {}", answer.chars().take(400).collect::<String>());
+            }
+        }
         "close" => {
             if let Some(h) = find_window() {
                 unsafe {
@@ -390,7 +414,7 @@ fn run(line: &str, port: u16) {
         other => eprintln!("unknown command {other}"),
     }
     // Let the app catch up between steps.
-    if !matches!(cmd, "wait" | "state" | "shot") {
+    if !matches!(cmd, "wait" | "state" | "shot" | "expect" | "expect-not") {
         std::thread::sleep(Duration::from_millis(120));
     }
 }
@@ -401,10 +425,20 @@ fn main() {
     }
     let port = std::env::var("RUTABLE_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(47800);
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("-") {
-        for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+    if args.first().map(String::as_str) == Some("-") || args.first().map(String::as_str) == Some("--script") {
+        let lines: Vec<String> = if args.first().map(String::as_str) == Some("--script") {
+            std::fs::read_to_string(args.get(1).expect("script file")).expect("read script").lines().map(String::from).collect()
+        } else {
+            std::io::stdin().lock().lines().map_while(Result::ok).collect()
+        };
+        for line in lines {
             run(&line, port);
             let _ = std::io::stdout().flush();
+        }
+        let failed = FAILED.load(std::sync::atomic::Ordering::Relaxed);
+        println!("{} failed", failed);
+        if failed > 0 {
+            std::process::exit(1);
         }
     } else {
         for line in args.join(" ").split(';') {

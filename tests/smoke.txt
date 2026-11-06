@@ -1,0 +1,83 @@
+# Rutable smoke test, driven like a user (rutable-driver --script tests/smoke.txt).
+# Start the app first: rutable.exe --automation --fresh --data <a scratch file>
+# (a 1440x900 window at 100% scale).
+click 700 26
+wait 500
+
+# Typing into a selected cell starts editing; Enter commits.
+click 400 258
+expect state :: "key_mode":1
+chars 冒烟测试任务
+expect state :: "mode":"Text"
+key enter
+expect table 3 :: 冒烟测试任务
+# Undo restores the old text.
+key ctrl+z
+expect table 3 :: 产品页接口联调
+expect-not table 3 :: 冒烟测试任务
+
+# Arrow keys move the selection; Escape clears it.
+click 400 192
+key down down right
+expect state :: "sel":[2,1,2,1,false]
+key escape
+expect state :: "sel":null
+
+# A single select edits from a list: Enter opens it, Down + Enter picks.
+click 590 225
+key enter
+expect state :: "mode":"Select"
+key down
+key enter
+expect table 2 :: 进行中
+
+# The date editor takes a typed date.
+click 1030 291
+key enter
+chars 2026/12/25
+key enter
+expect table 4 :: 2026/12/25
+
+# Copy a cell and paste it into another.
+click 400 192
+key ctrl+c
+click 400 357
+key ctrl+v
+expect table 6 :: 首页视觉设计","已完成","P0 紧急
+key ctrl+z
+
+# The field menu groups by the field.
+rclick 590 158
+wait 300
+expect state :: FieldMenu
+click 640 440
+wait 300
+expect state :: "rows":22
+key ctrl+z
+expect state :: "rows":15
+
+# Space expands the selected record into its card; Escape closes it.
+click 400 258
+key space
+wait 300
+expect state :: "expanded":["tbl
+key escape
+wait 300
+expect state :: "expanded":null
+
+# Search highlights matches (Ctrl+F).
+key ctrl+f
+wait 200
+chars 数据
+wait 300
+expect grid :: "cols"
+key enter
+expect state :: "search":"数据"
+
+# Views: the kanban view groups cards by 状态.
+click 640 77
+wait 800
+expect state :: "view_kind":"Kanban"
+click 300 77
+wait 600
+expect state :: "view_kind":"Grid"
