@@ -21,6 +21,8 @@ use crate::model::{
 pub struct Slot {
     pub get: Rc<dyn Fn() -> Option<Value>>,
     pub set: Rc<dyn Fn(Option<Value>)>,
+    /// Text is written as it is typed (a form's draft), not on blur.
+    pub live: bool,
 }
 
 pub fn record_slot(table: Id, record: Id, field: Id) -> Slot {
@@ -35,6 +37,7 @@ pub fn record_slot(table: Id, record: Id, field: Id) -> Slot {
             })
         }),
         set: Rc::new(move |v| st().set_cells(&table, &[(record.clone(), field.clone(), v)])),
+        live: false,
     }
 }
 
@@ -468,14 +471,20 @@ pub fn value_input(table: Id, field: Id, kind: FieldKind, slot: Slot) -> AnyElem
             let multiline = matches!(kind, FieldKind::Text);
             let g3 = get.clone();
             let k3 = kind.clone();
-            // Follows changes made elsewhere (undo, the grid).
+            let live = slot.live;
+            // Follows changes made elsewhere (undo, the grid; a form's reset).
             effect(move || {
                 let v = g3();
+                if live && v.is_some() {
+                    return;
+                }
                 let t = grid::edit::edit_text_of(&k3, v.as_ref());
                 if untracked(|| draft.get()) != t {
                     draft.set(t);
                 }
             });
+            let set_live = set.clone();
+            let k4 = kind.clone();
             let save2 = save.clone();
             let _ = s;
             nsh_core::element::input()
@@ -498,8 +507,19 @@ pub fn value_input(table: Id, field: Id, kind: FieldKind, slot: Slot) -> AnyElem
                 })
                 .placeholder_color(rgb(0xC9CDD4))
                 .value(move || draft.get())
-                .on_change(move |t: &str| draft.set(t.to_string()))
-                .on_blur(move || save())
+                .on_change(move |t: &str| {
+                    draft.set(t.to_string());
+                    if live {
+                        let mut k = k4.clone();
+                        let v = st().peek(|b| value::parse(b, &mut k, t));
+                        set_live(v);
+                    }
+                })
+                .on_blur(move || {
+                    if !live {
+                        save()
+                    }
+                })
                 .on_submit(move |_: &str| save2())
                 .into_element()
         }

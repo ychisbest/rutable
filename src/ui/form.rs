@@ -148,7 +148,6 @@ pub fn form_view() -> impl IntoElement {
                                     .into_element();
                             }
                             let cfg = config();
-                            let _ = draft_rev.get();
                             let tname = s.with_table(|_, t| t.name.clone()).unwrap_or_default();
                             let shown_title = if cfg.title.is_empty() { tname } else { cfg.title.clone() };
                             let questions: Vec<(Id, String, FieldKind, String, bool)> = cfg
@@ -213,6 +212,7 @@ pub fn form_view() -> impl IntoElement {
                                                     });
                                                     draft_rev.update(|r| *r += 1);
                                                 }),
+                                                live: true,
                                             };
                                             view()
                                                 .gap(px(8.0))
