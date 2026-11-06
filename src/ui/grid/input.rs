@@ -151,8 +151,8 @@ pub fn GridView() -> impl IntoElement {
                     }
                     let h = g.hit(x, y);
                     let row = match &h {
-                        Hit::Cell(r, _) | Hit::View(r) | Hit::CellButton(r, _) | Hit::CellCheckbox(r, _) | Hit::CellAdd(r, _) | Hit::CellRating(r, _, _)
-                        | Hit::RowCheck(r) | Hit::RowExpand(r) | Hit::RowGrip(r) | Hit::RowNum(r) => Some(*r),
+                        Hit::Cell(r, _) | Hit::CellOpen(r, _, _) | Hit::View(r) | Hit::CellButton(r, _) | Hit::CellCheckbox(r, _) | Hit::CellAdd(r, _) | Hit::CellRating(r, _, _)
+                        | Hit::RowCheck(r) | Hit::RowGrip(r) | Hit::RowNum(r) => Some(*r),
                         _ => None,
                     };
                     if g.hover.get_untracked() != h {
@@ -290,7 +290,7 @@ fn on_down(g: Grid, x: f32, y: f32) {
                 });
             }
         }
-        Hit::View(r) | Hit::RowExpand(r) => {
+        Hit::View(r) => {
             if let Some(i) = l.records.iter().position(|&ri| Some(ri) == l.record_at(r)) {
                 s.expanded.set(Some((l.table.clone(), l.record_ids[i].clone())));
             }
@@ -322,6 +322,35 @@ fn on_down(g: Grid, x: f32, y: f32) {
             } else {
                 g.sel.set(Some(Sel::cell(r, c)));
                 g.drag.set(Drag::Select);
+            }
+            s.checked.set(vec![]);
+        }
+        Hit::CellOpen(r, c, file) => {
+            if shift && g.sel.get_untracked().is_some() {
+                let mut sel = g.sel.get_untracked().unwrap();
+                sel.fr = r;
+                sel.fc = c;
+                sel.cols = false;
+                g.sel.set(Some(sel));
+            } else {
+                g.sel.set(Some(Sel::cell(r, c)));
+                let target = s.peek(|b| {
+                    let t = b.table(&l.table)?;
+                    let rec = t.records.get(l.record_at(r)?)?;
+                    let f = t.field(&l.cols[c].field)?;
+                    match (crate::model::query::cell(b, t, rec, f)?, file) {
+                        (Value::Url { link, .. }, None) => Some((link, false)),
+                        (Value::Files(files), Some(i)) => files.get(i).map(|a| (a.path.clone(), true)),
+                        _ => None,
+                    }
+                });
+                if let Some((target, is_file)) = target {
+                    if is_file {
+                        crate::ui::widgets::reveal_file(&target);
+                    } else {
+                        crate::ui::widgets::shell_open(&target);
+                    }
+                }
             }
             s.checked.set(vec![]);
         }
@@ -561,7 +590,7 @@ fn context_menu(g: Grid, x: f32, y: f32, px_: f32, py_: f32) {
         Hit::Header(c) | Hit::HeaderMenu(c) | Hit::Resize(c) => {
             s.popup.set(Some(Popup::FieldMenu { field: l.cols[c].field.clone(), x: px_, y: py_ }));
         }
-        Hit::Cell(r, c) | Hit::CellCheckbox(r, c) | Hit::CellAdd(r, c) | Hit::CellRating(r, c, _) => {
+        Hit::Cell(r, c) | Hit::CellOpen(r, c, _) | Hit::CellCheckbox(r, c) | Hit::CellAdd(r, c) | Hit::CellRating(r, c, _) => {
             let inside = g.sel.get_untracked().is_some_and(|sel| {
                 let (r0, r1) = sel.rows();
                 let (c0, c1) = sel.cols();
@@ -572,7 +601,7 @@ fn context_menu(g: Grid, x: f32, y: f32, px_: f32, py_: f32) {
             }
             s.popup.set(Some(Popup::RecordMenu { x: px_, y: py_ }));
         }
-        Hit::RowCheck(r) | Hit::RowExpand(r) | Hit::RowGrip(r) | Hit::RowNum(r) => {
+        Hit::RowCheck(r) | Hit::RowGrip(r) | Hit::RowNum(r) => {
             if !g.sel.get_untracked().is_some_and(|sel| r >= sel.rows().0 && r <= sel.rows().1) {
                 g.sel.set(Some(Sel { ar: r, ac: 0, fr: r, fc: l.cols.len().saturating_sub(1), cols: false }));
             }

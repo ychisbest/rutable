@@ -29,7 +29,7 @@ Command line: `--data <file>` picks the document, `--fresh` starts from the samp
 - **Grid view** (canvas-drawn): cell / range / column selection with mouse and keyboard, type to edit,
   editors per type (option list with create, calendar, people, record picker, attachments), fill
   handle, copy / cut / paste as TSV (adds records past the end), column resize and move, row drag,
-  frozen columns, row header with checkboxes and expand, grouping (3 levels, collapsible), statistics
+  frozen columns, row header with checkboxes and a primary-cell 查看 button, grouping (3 levels, collapsible), statistics
   per column, row heights, row coloring (填色), search with highlighted matches, undo / redo.
 - **Field menu**: edit, description, insert left / right, duplicate, sort, group, filter, freeze,
   hide, delete.
@@ -38,6 +38,8 @@ Command line: `--data <file>` picks the document, `--fresh` starts from the samp
 - **Other views**: kanban (group by single select or person, drag cards between columns, cover,
   compact mode), gallery, gantt (drag to move, day / week / month / quarter / year scales), calendar
   (start / end fields, add on a day), form (choose questions, required ones, submit adds a record).
+- Click URL text to open the link in the default browser; click attachment thumbnails to reveal and
+  select the file in Explorer. Click cell whitespace or press F2 to edit.
 - **Record card** (展开记录, Space): every field editable, previous / next, duplicate, delete,
   comments, change history.
 - **Formulas**: `[字段]`, `[表].[字段]`, chained calls (`[表].FILTER(CurrentValue.[金额] > 100).[客户]`),

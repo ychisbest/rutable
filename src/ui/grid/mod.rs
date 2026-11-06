@@ -161,12 +161,13 @@ pub enum Hit {
     Resize(usize),
     AddField,
     RowCheck(usize),
-    RowExpand(usize),
     /// The "查看" button of the primary cell under the pointer.
     View(usize),
     RowGrip(usize),
     RowNum(usize),
     Cell(usize, usize),
+    /// Clickable URL text or attachment thumbnail (file index).
+    CellOpen(usize, usize, Option<usize>),
     CellCheckbox(usize, usize),
     CellAdd(usize, usize),
     CellRating(usize, usize, u8),
@@ -481,7 +482,7 @@ impl Grid {
             if x < 46.0 {
                 return Hit::RowCheck(r);
             }
-            return Hit::RowExpand(r);
+            return Hit::RowNum(r);
         }
         let Some(c) = self.col_at_x(&l, x) else { return Hit::None };
         let (cx, cy0, cw, ch) = self.cell_rect(&l, r, c);
@@ -519,7 +520,20 @@ impl Grid {
             }
             _ => {}
         }
-        let _ = cw;
+        // Only the rendered link text / thumbnail opens a resource; blank space
+        // keeps the normal cell selection and editing behavior.
+        if self.editing.get_untracked().is_none() && matches!(l.cols[c].kind, FieldKind::Url | FieldKind::Attachment) {
+            let resource = st().peek(|b| {
+                let t = b.table(&l.table)?;
+                let rec = t.records.get(l.record_at(r)?)?;
+                let f = t.field(&l.cols[c].field)?;
+                let v = crate::model::query::cell(b, t, rec, f)?;
+                crate::ui::cells::resource_at(&v, x - cx, y - cy0, cw, ch)
+            });
+            if let Some(file) = resource {
+                return Hit::CellOpen(r, c, file);
+            }
+        }
         Hit::Cell(r, c)
     }
 

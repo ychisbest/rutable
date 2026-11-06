@@ -428,7 +428,7 @@ pub fn value_input(table: Id, field: Id, kind: FieldKind, slot: Slot) -> AnyElem
                                                 .border_1()
                                                 .border_color(rgb(BORDER))
                                                 .overflow_hidden()
-                                                .on_press(move || widgets::shell_open(&path))
+                                                .on_press(move || widgets::reveal_file(&path))
                                                 .child(canvas(move || cells::file_thumb(Painter::new(), &a2, 0.0, 0.0, 96.0)).size(px(96.0)))
                                                 .child(
                                                     view()
@@ -508,7 +508,8 @@ pub fn value_input(table: Id, field: Id, kind: FieldKind, slot: Slot) -> AnyElem
             let k4 = kind.clone();
             let save2 = save.clone();
             let _ = s;
-            nsh_core::element::input()
+            let is_url = matches!(kind, FieldKind::Url);
+            let input = nsh_core::element::input()
                 .min_h(px(36.0))
                 .px(px(10.0))
                 .py(px(8.0))
@@ -541,8 +542,20 @@ pub fn value_input(table: Id, field: Id, kind: FieldKind, slot: Slot) -> AnyElem
                         save()
                     }
                 })
-                .on_submit(move |_: &str| save2())
-                .into_element()
+                .on_submit(move |_: &str| save2());
+            if is_url {
+                view().flex_row().items_center().gap(px(8.0))
+                    .child(input.flex_1())
+                    .child(widgets::link_button("打开链接", move || {
+                        let link = draft.get_untracked();
+                        if !link.trim().is_empty() {
+                            widgets::shell_open(link.trim());
+                        }
+                    }))
+                    .into_element()
+            } else {
+                input.into_element()
+            }
         }
     }
 }

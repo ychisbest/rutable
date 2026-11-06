@@ -4,7 +4,7 @@
 use chrono::Datelike;
 use nsh_core::prelude::*;
 
-use super::{icons, theme::*};
+use super::{icons, state::st, theme::*};
 use crate::model::value::{self, strong_color};
 
 pub fn check_box(on: bool) -> impl IntoElement {
@@ -473,5 +473,36 @@ pub fn shell_open(target: &str) {
     let op = wide("open");
     unsafe {
         ShellExecuteW(None, windows::core::PCWSTR(op.as_ptr()), windows::core::PCWSTR(t.as_ptr()), None, None, SW_SHOWNORMAL);
+    }
+}
+
+/// Opens Explorer at the attachment and selects it, without opening the file.
+pub fn reveal_file(path: &str) {
+    use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
+    let Ok(path) = std::fs::canonicalize(path) else {
+        st().toast("附件不存在或无法访问，无法打开文件位置");
+        return;
+    };
+    // Shell item parsing expects a regular DOS/UNC path, rather than the
+    // extended-length prefix returned by canonicalize on Windows.
+    let path = path.to_string_lossy();
+    let path = if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(&path).to_string()
+    };
+    let path = wide(&path);
+    let result = unsafe {
+        let item = ILCreateFromPathW(windows::core::PCWSTR(path.as_ptr()));
+        if item.is_null() {
+            st().toast("无法打开附件所在位置");
+            return;
+        }
+        let result = SHOpenFolderAndSelectItems(item, None, 0);
+        ILFree(Some(item));
+        result
+    };
+    if result.is_err() {
+        st().toast("无法打开附件所在位置");
     }
 }

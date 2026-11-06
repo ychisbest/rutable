@@ -145,7 +145,7 @@ pub fn paint(g: &Grid) -> Painter {
                         }
                         p = line(p, row_x, y + rh - 1.0, clip_w, 1.0, LINE);
                         if pass == 1 {
-                            // Row header: grip, number or checkbox, expand.
+                            // Row header: grip, number or checkbox.
                             p = line(p, 0.0, y, RH, rh, bg);
                             let mid = y + rh.min(33.0) / 2.0;
                             let hovered = hover_row == Some(r);
@@ -162,13 +162,6 @@ pub fn paint(g: &Grid) -> Painter {
                                     .text_align(CanvasTextAlign::Center)
                                     .text_baseline(CanvasTextBaseline::Middle)
                                     .fill_text(&num, 30.0, mid);
-                            }
-                            if hovered {
-                                let on = matches!(hover, Hit::RowExpand(hr) if hr == r);
-                                if on {
-                                    p = rrect(p, 46.0, mid - 11.0, 22.0, 22.0, 4.0, 0xE8EAED);
-                                }
-                                p = icons::draw(p, "expand", 49.0, mid - 8.0, 16.0, if on { PRIMARY } else { TEXT2 });
                             }
                             let comments = rec.comments.len();
                             if comments > 0 && !hovered {

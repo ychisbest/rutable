@@ -377,3 +377,60 @@ pub fn draw_value(
         }
     }
 }
+
+/// Hit-test the visible resource, using the same geometry as `draw_value`.
+/// `Some(None)` is a URL; `Some(Some(i))` is attachment i.
+pub fn resource_at(v: &Value, x: f32, y: f32, w: f32, h: f32) -> Option<Option<usize>> {
+    let mid = h.min(33.0) / 2.0;
+    match v {
+        Value::Url { text, link } if !link.trim().is_empty() => {
+            let shown = if text.is_empty() { link } else { text };
+            let shown = ellipsize(shown, w - 16.0, 14.0);
+            (x >= 8.0 && x < 8.0 + text_w(&shown, 14.0) && (y - mid).abs() <= 10.0).then_some(None)
+        }
+        Value::Files(files) => {
+            let size = (h.min(33.0) - 8.0).max(18.0).min(25.0);
+            for i in 0..files.len() {
+                let left = 8.0 + i as f32 * (size + 4.0);
+                if left + size > w - 8.0 {
+                    break;
+                }
+                if x >= left && x < left + size && (y - mid).abs() <= size / 2.0 {
+                    return Some(Some(i));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+    use crate::model::Attachment;
+
+    #[test]
+    fn link_whitespace_and_empty_targets_do_not_open() {
+        // Supply text metrics without starting a UI surface in the unit test.
+        WIDTHS.with(|widths| widths.borrow_mut().insert((140, "Docs".into()), 32.0));
+        let link = Value::Url { text: "Docs".into(), link: "https://example.com".into() };
+        assert_eq!(resource_at(&link, 10.0, 16.5, 200.0, 33.0), Some(None));
+        assert_eq!(resource_at(&link, 180.0, 16.5, 200.0, 33.0), None);
+        assert_eq!(resource_at(&link, 10.0, 50.0, 200.0, 66.0), None);
+        let empty = Value::Url { text: "Docs".into(), link: " ".into() };
+        assert_eq!(resource_at(&empty, 10.0, 16.5, 200.0, 33.0), None);
+    }
+
+    #[test]
+    fn attachment_hits_select_the_clicked_visible_file() {
+        let files = Value::Files((0..3).map(|i| Attachment {
+            name: format!("{i}.txt"), path: format!(r"C:\files\{i}.txt"), size: 1,
+        }).collect());
+        assert_eq!(resource_at(&files, 10.0, 16.5, 100.0, 33.0), Some(Some(0)));
+        assert_eq!(resource_at(&files, 40.0, 16.5, 100.0, 33.0), Some(Some(1)));
+        assert_eq!(resource_at(&files, 34.0, 16.5, 100.0, 33.0), None); // thumbnail gap
+        assert_eq!(resource_at(&files, 70.0, 16.5, 90.0, 33.0), None); // clipped file
+        assert_eq!(resource_at(&files, 10.0, 50.0, 100.0, 66.0), None);
+    }
+}
