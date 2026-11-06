@@ -2,3 +2,4 @@
 /driver/target
 *.png
 !/docs/*.png
+/shots
