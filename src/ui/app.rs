@@ -48,6 +48,7 @@ pub fn RutableApp() -> impl IntoElement {
         st().save_now();
         st().toast("已保存");
     });
+    on_key("mod+f", move |_| st().search_open.set(true));
     on_key("mod+/", move |_| st().popup.set(Some(super::state::Popup::Shortcuts)));
 
     // What the main area shows changes only with these.

@@ -339,7 +339,7 @@ pub fn toolbar(kind: ViewKind) -> impl IntoElement {
         .child(dynamic(move || {
             if s.search_open.get() {
                 view()
-                    .w(px(240.0))
+                    .w(px(300.0))
                     .h(px(30.0))
                     .px(px(8.0))
                     .rounded(px(6.0))
@@ -357,8 +357,34 @@ pub fn toolbar(kind: ViewKind) -> impl IntoElement {
                             .placeholder_color(rgb(TEXT3))
                             .auto_focus(true)
                             .value(move || search_text.get())
-                            .on_change(move |t: &str| search_text.set(t.to_string())),
+                            .on_change(move |t: &str| {
+                                search_text.set(t.to_string());
+                                if let Some(g) = grid::grid() {
+                                    g.match_at.set(0);
+                                    let l = g.layout.get_untracked();
+                                    if let Some(&(r, c)) = l.matches.first() {
+                                        g.reveal(r, c);
+                                    }
+                                }
+                            })
+                            .on_submit(move |_: &str| {
+                                if let Some(g) = grid::grid() {
+                                    g.next_match(false);
+                                }
+                            }),
                     )
+                    .child(text(move || {
+                        let _ = search_text.get();
+                        match grid::grid() {
+                            Some(g) if kind == ViewKind::Grid => {
+                                let n = g.layout.get().matches.len();
+                                if n == 0 { "0/0".to_string() } else { format!("{}/{}", g.match_at.get().min(n - 1) + 1, n) }
+                            }
+                            _ => String::new(),
+                        }
+                    }).text_size(px(12.0)).text_color(rgb(TEXT3)))
+                    .child(view().on_press(move || if let Some(g) = grid::grid() { g.next_match(true) }).child(icons::icon("chevron-up", 14.0, TEXT2)))
+                    .child(view().on_press(move || if let Some(g) = grid::grid() { g.next_match(false) }).child(icons::icon("chevron-down", 14.0, TEXT2)))
                     .child(
                         view()
                             .on_press(move || {

@@ -94,6 +94,10 @@ pub fn paint(g: &Grid) -> Painter {
                             if in_rows && c >= c0 && c <= c1 {
                                 p = p.fill_color(rgba(0x3370FF14)).fill_rect(cx, y, col.w, rh);
                             }
+                            if let Ok(mi) = l.matches.binary_search(&(r, c)) {
+                                let current = mi == g.match_at.get().min(l.matches.len().saturating_sub(1));
+                                p = p.fill_color(rgb(if current { 0xFFD666 } else { 0xFFF3C4 })).fill_rect(cx, y, col.w, rh);
+                            }
                             if let Some(f) = t.field(&col.field) {
                                 let v = query::cell(b, t, rec, f);
                                 let lines = if rh > 40.0 { ((rh - 8.0) / 22.0).floor().max(1.0) as usize } else { 1 };

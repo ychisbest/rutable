@@ -51,6 +51,8 @@ pub struct Layout {
     pub sorted: bool,
     pub grouped: bool,
     pub wrap: bool,
+    /// Cells holding the search text: (row, column).
+    pub matches: Vec<(usize, usize)>,
 }
 
 impl Layout {
@@ -196,6 +198,8 @@ pub struct Grid {
     /// Search text typed into an option list editor.
     pub list_query: Signal<String>,
     pub list_index: Signal<usize>,
+    /// The search match the grid is at.
+    pub match_at: Signal<usize>,
 }
 
 thread_local! {
@@ -235,7 +239,8 @@ fn make_layout(resize: Option<(usize, f32)>) -> Layout {
         }
         let frozen = v.frozen.min(cols.len());
         let frozen_w = cols.iter().take(frozen).map(|c| c.w).sum();
-        let rows = crate::model::query::rows(b, t, v, &search);
+        // The grid's search highlights; it does not filter.
+        let rows = crate::model::query::rows(b, t, v, "");
         let row_h = v.row_height.px();
         let mut tops = Vec::with_capacity(rows.len());
         let mut heights = Vec::with_capacity(rows.len());
@@ -255,6 +260,23 @@ fn make_layout(resize: Option<(usize, f32)>) -> Layout {
             y += h;
         }
         let record_ids = records.iter().map(|&i| t.records[i].id.clone()).collect();
+        let mut matches = vec![];
+        let q = search.trim().to_lowercase();
+        if !q.is_empty() {
+            for (ri, row) in rows.iter().enumerate() {
+                if let Row::Record(i) = row {
+                    let rec = &t.records[*i];
+                    for (ci, f) in fields.iter().enumerate() {
+                        let hit = crate::model::query::cell(b, t, rec, f)
+                            .map(|v| crate::model::value::display(b, t, &f.kind, &v).to_lowercase().contains(&q))
+                            .unwrap_or(false);
+                        if hit {
+                            matches.push((ri, ci));
+                        }
+                    }
+                }
+            }
+        }
         Layout {
             table: t.id.clone(),
             view: v.id.clone(),
@@ -272,6 +294,7 @@ fn make_layout(resize: Option<(usize, f32)>) -> Layout {
             sorted: !v.sorts.is_empty(),
             grouped: !v.groups.is_empty(),
             wrap: v.wrap,
+            matches,
         }
     })
     .unwrap_or_default()
@@ -298,6 +321,7 @@ impl Grid {
             last_press: stored((0.0, Hit::None)),
             list_query: signal(String::new()),
             list_index: signal(0),
+            match_at: signal(0),
         };
         GRID.with(|x| *x.borrow_mut() = Some(g));
         let id = GRID_ID.with(|i| {
@@ -485,6 +509,21 @@ impl Grid {
         }
         let _ = cw;
         Hit::Cell(r, c)
+    }
+
+    /// Moves to the next (or previous) search match.
+    pub fn next_match(&self, back: bool) {
+        let l = self.layout.get_untracked();
+        let n = l.matches.len();
+        if n == 0 {
+            return;
+        }
+        let i = self.match_at.get_untracked().min(n - 1);
+        let ni = if back { (i + n - 1) % n } else { (i + 1) % n };
+        self.match_at.set(ni);
+        let (r, c) = l.matches[ni];
+        self.sel.set(Some(Sel::cell(r, c)));
+        self.reveal(r, c);
     }
 
     /// Scrolls so cell (r, c) shows.
