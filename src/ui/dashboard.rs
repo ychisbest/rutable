@@ -102,12 +102,12 @@ pub fn paint_chart(c: &Chart, w: f32, h: f32) -> Painter {
                 .fill_text(&fmt(v), 4.0, h / 2.0);
         }
         ChartKind::Bar | ChartKind::Line => {
-            let left = 44.0;
+            let left = (text_w(&fmt(max), 11.0) + 12.0).max(32.0);
             let bottom = 28.0;
-            let ch = h - bottom - 10.0;
+            let ch = h - bottom - 24.0;
             let cw = w - left - 8.0;
             for i in 0..=4 {
-                let y = 10.0 + ch * (1.0 - i as f32 / 4.0);
+                let y = 20.0 + ch * (1.0 - i as f32 / 4.0);
                 p = p.fill_color(rgb(LINE)).fill_rect(left, y, cw, 1.0);
                 p = super::cells::text_right(p, &fmt(max * i as f64 / 4.0), left - 6.0, y, 11.0, TEXT3);
             }
@@ -119,15 +119,15 @@ pub fn paint_chart(c: &Chart, w: f32, h: f32) -> Painter {
                 let bh = ch * (*v / max) as f32;
                 if c.kind == ChartKind::Bar {
                     let bw = (slot * 0.5).min(48.0);
-                    p = super::cells::rrect(p, x + (slot - bw) / 2.0, 10.0 + ch - bh, bw, bh, 3.0, *color);
+                    p = super::cells::rrect(p, x + (slot - bw) / 2.0, 20.0 + ch - bh, bw, bh, 3.0, *color);
                     p = p
                         .font(&font(11.0))
                         .fill_color(rgb(TEXT2))
                         .text_align(CanvasTextAlign::Center)
                         .text_baseline(CanvasTextBaseline::Bottom)
-                        .fill_text(&fmt(*v), x + slot / 2.0, 8.0 + ch - bh);
+                        .fill_text(&fmt(*v), x + slot / 2.0, 18.0 + ch - bh);
                 } else {
-                    pts.push((x + slot / 2.0, 10.0 + ch - bh));
+                    pts.push((x + slot / 2.0, 20.0 + ch - bh));
                 }
                 p = p
                     .font(&font(11.0))

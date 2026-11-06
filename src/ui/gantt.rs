@@ -148,7 +148,13 @@ pub fn gantt() -> impl IntoElement {
                     p = rrect(p, bx + 2.0, y + 8.0, ((bw - 4.0) * pr.clamp(0.0, 1.0) as f32).max(0.0), ROW - 16.0, 5.0, strong);
                 }
                 p = p.fill_color(rgb(strong)).fill_rect(bx + 2.0, y + 8.0, 3.0, ROW - 16.0);
-                p = text_at(p, &ellipsize(&b.title, (bw - 16.0).max(0.0), 12.0), bx + 10.0, y + ROW / 2.0, 12.0, TEXT);
+                let days = (e1 - s1) / value::DAY_MS + 1;
+                let label = format!("{}  {}天", b.title, days);
+                if bw > 40.0 {
+                    p = text_at(p, &ellipsize(&label, (bw - 16.0).max(0.0), 12.0), bx + 10.0, y + ROW / 2.0, 12.0, TEXT);
+                } else {
+                    p = text_at(p, &ellipsize(&label, 200.0, 12.0), bx + bw + 6.0, y + ROW / 2.0, 12.0, TEXT2);
+                }
                 if hv == Some(i) {
                     p = rrect(p, bx + 2.0, y + 12.0, 4.0, ROW - 24.0, 2.0, strong);
                     p = rrect(p, bx + bw - 6.0, y + 12.0, 4.0, ROW - 24.0, 2.0, strong);
@@ -176,6 +182,9 @@ pub fn gantt() -> impl IntoElement {
                 p = p.fill_color(rgb(BORDER)).fill_rect(x, 0.0, 1.0, 28.0);
             }
             let is_today = value::day_start(ms) == today;
+            if dw < 14.0 && dt.day() != 1 && dt.day() != 15 {
+                continue;
+            }
             p = p
                 .font(&font(11.0))
                 .fill_color(rgb(if is_today { PRIMARY } else { TEXT3 }))
@@ -216,6 +225,17 @@ pub fn gantt() -> impl IntoElement {
         }
     };
     let last_press = stored(0i64);
+    // Opens with today near the left.
+    let placed = stored(false);
+    effect(move || {
+        let (w, _) = size.get();
+        if w > 0.0 && !placed.with(|p| *p) {
+            placed.with(|p| *p = true);
+            let o = origin_day.get_untracked();
+            let x = ((value::today_ms() - o) / value::DAY_MS) as f32 * day_w.get_untracked() - 5.0 * day_w.get_untracked();
+            sx.set(x.max(0.0));
+        }
+    });
     super::wheel::take(move |dx, dy| {
         let (w, h) = size.get_untracked();
         let n = data.get_untracked().len() as f32;
@@ -261,12 +281,14 @@ pub fn gantt() -> impl IntoElement {
                 .child(view().flex_1())
                 .child(widgets::dropdown(
                     move || match day_w.get() as i32 {
-                        16 => "按月".into(),
+                        64 => "按日".into(),
                         36 => "按周".into(),
-                        _ => "按日".into(),
+                        16 => "按月".into(),
+                        6 => "按季".into(),
+                        _ => "按年".into(),
                     },
-                    || vec!["按日".into(), "按周".into(), "按月".into()],
-                    move |i| day_w.set([64.0, 36.0, 16.0][i]),
+                    || vec!["按日".into(), "按周".into(), "按月".into(), "按季".into(), "按年".into()],
+                    move |i| day_w.set([64.0, 36.0, 16.0, 6.0, 2.0][i]),
                     90.0,
                 ))
                 .child(widgets::button("今天", move || {

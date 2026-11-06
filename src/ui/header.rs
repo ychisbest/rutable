@@ -328,6 +328,12 @@ pub fn toolbar(kind: ViewKind) -> impl IntoElement {
         .child(when(move || kind == ViewKind::Grid, move || {
             widgets::tool_button("rowheight", || "行高".into(), || false, move |x, y| st().popup.set(Some(Popup::RowHeight { x, y })))
         }))
+        .child(when(move || kind == ViewKind::Grid, move || {
+            let n = move || s.with_view(|_, _, v| v.row_colors.len()).unwrap_or(0);
+            widgets::tool_button("palette", move || if n() > 0 { format!("{} 个填色条件", n()) } else { "填色".into() }, move || n() > 0, move |x, y| {
+                st().popup.set(Some(Popup::Colors { x, y }))
+            })
+        }))
         .child(widgets::tool_button("more", || "".into(), || false, move |x, y| st().popup.set(Some(Popup::More { x, y }))))
         .child(view().flex_1())
         .child(dynamic(move || {

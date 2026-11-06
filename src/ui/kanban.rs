@@ -28,9 +28,9 @@ pub fn card(table: Id, record: Id, width: f32, cover_h: f32) -> AnyElement {
         });
         let title = value::record_title(b, t, &r.id);
         let rows: Vec<(Field, Option<Value>)> = fields.iter().skip(1).filter(|f| v.group_field.as_ref() != Some(&f.id)).take(5).map(|f| (f.clone(), query::cell(b, t, r, f))).collect();
-        Some((title, cover, rows, v.cover_field.is_some()))
+        Some((title, cover, rows, v.cover_field.is_some(), v.compact))
     }).flatten();
-    let Some((title, cover, rows, has_cover)) = info else { return view().into_element() };
+    let Some((title, cover, rows, has_cover, compact)) = info else { return view().into_element() };
     let inner = width - 24.0;
     view()
         .w(px(width))
@@ -66,7 +66,7 @@ pub fn card(table: Id, record: Id, width: f32, cover_h: f32) -> AnyElement {
                             let (tid, k) = (table.clone(), f.kind.clone());
                             view()
                                 .gap(px(2.0))
-                                .child(text(f.name.clone()).text_size(px(11.0)).text_color(rgb(TEXT3)))
+                                .child(if compact { view().into_element() } else { text(f.name.clone()).text_size(px(11.0)).text_color(rgb(TEXT3)).into_element() })
                                 .child(
                                     canvas(move || {
                                         st().peek(|b| {
@@ -176,7 +176,10 @@ pub fn kanban() -> impl IntoElement {
                         }
                     },
                     200.0,
-                )),
+                ))
+                .child(view().w(px(16.0)))
+                .child(text("紧凑模式").text_size(px(13.0)).text_color(rgb(TEXT2)))
+                .child(widgets::switch(move || s.with_view(|_, _, v| v.compact).unwrap_or(false), move || st().edit_view(|v| v.compact = !v.compact))),
         )
         .child(dynamic(move || {
             if s.with_view(|_, t, v| v.group_field.as_ref().and_then(|g| t.field(g)).is_none()).unwrap_or(true) {

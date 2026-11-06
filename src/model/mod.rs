@@ -873,6 +873,9 @@ pub struct View {
     /// Wraps long text in cells (自动换行).
     #[serde(default)]
     pub wrap: bool,
+    /// Kanban / gallery: cards without field names (紧凑模式).
+    #[serde(default)]
+    pub compact: bool,
 }
 
 fn yes() -> bool {
@@ -911,6 +914,7 @@ impl View {
             row_colors: vec![],
             hidden_groups: vec![],
             wrap: false,
+            compact: false,
         }
     }
 }

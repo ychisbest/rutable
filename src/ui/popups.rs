@@ -35,6 +35,7 @@ fn build(p: Popup) -> Option<AnyElement> {
         Popup::Group { x, y } => rules_panel(true, x, y).into_element(),
         Popup::Fields { x, y } => fields_panel(x, y).into_element(),
         Popup::RowHeight { x, y } => row_height(x, y).into_element(),
+        Popup::Colors { x, y } => colors_panel(x, y).into_element(),
         Popup::Stat { field, x, y } => stat_menu(field, x, y).into_element(),
         Popup::SidebarMenu { item, x, y } => sidebar_menu(item, x, y).into_element(),
         Popup::SidebarAdd { x, y } => sidebar_add(x, y).into_element(),
@@ -572,6 +573,8 @@ fn set_condition(id: &str, f: impl FnOnce(&mut Condition)) {
     st().edit_view(|v| {
         if let Some(c) = v.filter.conditions.iter_mut().find(|c| c.id == id) {
             f(c)
+        } else if let Some((c, _)) = v.row_colors.iter_mut().find(|(c, _)| c.id == id) {
+            f(c)
         }
     });
 }
@@ -627,7 +630,12 @@ fn condition_row(c: Condition) -> AnyElement {
                 .items_center()
                 .justify_center()
                 .hover(|s| s.bg(rgb(HOVER)))
-                .on_press(move || s.edit_view(|v| v.filter.conditions.retain(|x| x.id != cid3)))
+                .on_press(move || {
+                    s.edit_view(|v| {
+                        v.filter.conditions.retain(|x| x.id != cid3);
+                        v.row_colors.retain(|(x, _)| x.id != cid3);
+                    })
+                })
                 .child(icons::icon("trash", 16.0, TEXT3)),
         )
         .into_element()
@@ -793,6 +801,68 @@ fn value_editor(c: Condition, kind: FieldKind) -> impl IntoElement {
                 .into_element()
         }
     }
+}
+
+/// 填色: rows meeting a condition get a color.
+fn colors_panel(x: f32, y: f32) -> impl IntoElement {
+    let s = st();
+    popover_at(
+        x,
+        y,
+        660.0,
+        close,
+        view()
+            .px(px(16.0))
+            .py(px(12.0))
+            .gap(px(10.0))
+            .child(text("记录填色：满足条件的记录显示为指定颜色").text_size(px(14.0)).font_weight(FontWeight::MEDIUM).text_color(rgb(TEXT)))
+            .child(dynamic(move || {
+                let rules = s.with_view(|_, _, v| v.row_colors.clone()).unwrap_or_default();
+                if rules.is_empty() {
+                    return vec![view().py(px(8.0)).child(text("暂无填色规则").text_size(px(13.0)).text_color(rgb(TEXT3))).into_element()];
+                }
+                rules
+                    .into_iter()
+                    .map(|(c, color)| {
+                        let cid = c.id.clone();
+                        let (bg, _) = value::tag_color(color);
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                view()
+                                    .size(px(24.0))
+                                    .rounded(px(6.0))
+                                    .bg(rgb(bg))
+                                    .border_1()
+                                    .border_color(rgb(BORDER))
+                                    .on_press(move || {
+                                        let cid = cid.clone();
+                                        st().edit_view(|v| {
+                                            if let Some(r) = v.row_colors.iter_mut().find(|(c, _)| c.id == cid) {
+                                                r.1 = (r.1 + 1) % 10;
+                                            }
+                                        })
+                                    }),
+                            )
+                            .child(view().flex_1().child(condition_row(c)))
+                            .into_element()
+                    })
+                    .collect::<Vec<_>>()
+            }))
+            .child(view().flex_row().child(widgets::link_button("+ 添加条件", move || {
+                let fields = field_names();
+                if let Some((id, _, kind)) = fields.get(1).or(fields.first()) {
+                    let op = Op::for_kind(kind)[0];
+                    let id = id.clone();
+                    s.edit_view(|v| {
+                        let n = v.row_colors.len() as u8;
+                        v.row_colors.push((Condition { id: new_id("cnd"), field: id, op, value: FilterValue::None }, (n * 3 + 7) % 10))
+                    });
+                }
+            }))),
+    )
 }
 
 // ---------------------------------------------------------------------------

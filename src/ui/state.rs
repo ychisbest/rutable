@@ -22,6 +22,7 @@ pub enum Popup {
     Group { x: f32, y: f32 },
     Fields { x: f32, y: f32 },
     RowHeight { x: f32, y: f32 },
+    Colors { x: f32, y: f32 },
     Stat { field: Id, x: f32, y: f32 },
     SidebarMenu { item: Id, x: f32, y: f32 },
     SidebarAdd { x: f32, y: f32 },

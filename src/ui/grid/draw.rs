@@ -57,6 +57,7 @@ pub fn paint(g: &Grid) -> Painter {
     p = s.peek(move |b| {
         let mut p = p;
         let Some(t) = b.table(&l.table) else { return p };
+        let v_colors = t.view(&l.view).map(|v| v.row_colors.clone()).unwrap_or_default();
         // Body rows: scrolling columns first, frozen columns over them.
         for pass in 0..2 {
             let clip_x = if pass == 0 { scroll_left } else { 0.0 };
@@ -70,8 +71,11 @@ pub fn paint(g: &Grid) -> Painter {
                         let rec = &t.records[*ri];
                         let is_checked = checked.contains(&rec.id);
                         let in_rows = r >= r0 && r <= r1 && sel.is_some_and(|s| !s.single() || s.cols);
+                        let fill = v_colors.iter().find(|(c, _)| (c.value != crate::model::FilterValue::None || !c.op.needs_value()) && query::meets(b, t, rec, c)).map(|(_, col)| crate::model::value::tag_color(*col).0);
                         let bg = if is_checked {
                             0xEEF3FF
+                        } else if let Some(f) = fill {
+                            f
                         } else if hover_row == Some(r) {
                             0xF7F8FA
                         } else {
