@@ -829,11 +829,7 @@ fn date_body(g: Grid, e: Editing) -> impl IntoElement {
     let with_time = s.peek(|b| {
         b.table(&s.cur.get_untracked()).and_then(|t| t.field(&e.field)).is_some_and(|f| matches!(f.kind, FieldKind::Date { time: true, .. }))
     });
-    if g.list_query.get_untracked().is_empty() {
-        if let Some(ms) = cur_ms {
-            g.list_query.set(value::format_date(ms, crate::model::DateFormat::YmdSlash, with_time));
-        }
-    }
+    let current_text = cur_ms.map(|ms| value::format_date(ms, crate::model::DateFormat::YmdSlash, with_time));
     let record = e.record.clone();
     let field = e.field.clone();
     let set = move |ms: Option<i64>| {
@@ -859,7 +855,7 @@ fn date_body(g: Grid, e: Editing) -> impl IntoElement {
                     .border_1()
                     .border_color(rgb(BORDER))
                     .text_size(px(14.0))
-                    .placeholder(if with_time { "2024/01/30 09:00" } else { "2024/01/30" })
+                    .placeholder(current_text.unwrap_or_else(|| if with_time { "2024/01/30 09:00".into() } else { "2024/01/30".into() }))
                     .placeholder_color(rgb(TEXT3))
                     .auto_focus(true)
                     .value(move || g.list_query.get())

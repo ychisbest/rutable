@@ -30,6 +30,7 @@ pub fn GridView() -> impl IntoElement {
             let key = format!("{}/{}", s.cur.get(), s.view.get());
             if last.with(|l| *l != key) {
                 last.with(|l| *l = key);
+                crate::ui::automation::log("sel reset: view changed");
                 g.sel.set(None);
                 g.editing.set(None);
                 g.sx.set(0.0);
@@ -44,11 +45,13 @@ pub fn GridView() -> impl IntoElement {
             let n = l.rows.len();
             let c = l.cols.len();
             if n == 0 || c == 0 {
+                crate::ui::automation::log("sel reset: no rows");
                 g.sel.set(None);
                 return;
             }
             let fix = |r: usize| l.next_record(r.min(n - 1) as isize, -1).or(l.first_record());
             let (Some(ar), Some(fr)) = (fix(sel.ar), fix(sel.fr)) else {
+                crate::ui::automation::log("sel reset: rows gone");
                 g.sel.set(None);
                 return;
             };
@@ -143,7 +146,8 @@ pub fn GridView() -> impl IntoElement {
                         g.origin.set(o);
                     }
                     if g.drag.get_untracked() != Drag::None {
-                        return;
+                        // Hover moves come with no button down: the release was missed.
+                        on_up(g);
                     }
                     let h = g.hit(x, y);
                     let row = match &h {
@@ -326,9 +330,8 @@ fn on_down(g: Grid, x: f32, y: f32) {
             edit::toggle_checkbox(g, r, c);
         }
         Hit::CellRating(r, c, n) => {
-            let was = g.sel.get_untracked().is_some_and(|s| s.single() && s.ar == r && s.ac == c);
             g.sel.set(Some(Sel::cell(r, c)));
-            if was || dbl {
+            if !dbl {
                 edit::set_rating(g, r, c, n);
             }
         }

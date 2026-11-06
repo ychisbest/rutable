@@ -10,7 +10,8 @@
 //!   down X Y | up X Y           left button down / up
 //!   wheel X Y DY                wheel turns (+ = up) over a point
 //!   key ctrl+shift+a | key enter | key down ...
-//!   type TEXT                   unicode text (rest of the line)
+//!   type TEXT                   unicode text (rest of the line), as keys
+//!   chars TEXT                  text posted as characters (no input method)
 //!   wait MS
 //!   shot FILE.png               the window's client area
 //!   state [QUERY]               the app's state over the automation port
@@ -358,6 +359,16 @@ fn run(line: &str, port: u16) {
             }
         }
         "type" => type_text(rest),
+        "chars" => {
+            // Characters posted to the window, past the input method.
+            let w = Win::get();
+            for unit in rest.encode_utf16() {
+                unsafe {
+                    let _ = PostMessageW(Some(w.hwnd), WM_CHAR, WPARAM(unit as usize), LPARAM(1));
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+        }
         "wait" => std::thread::sleep(Duration::from_millis(n(0) as u64)),
         "shot" => {
             std::thread::sleep(Duration::from_millis(250));

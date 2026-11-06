@@ -9,6 +9,21 @@ use crate::{
     win,
 };
 
+thread_local! {
+    static LOG: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Notes an event for the driver (the last 30 show in `state`).
+pub fn log(msg: impl Into<String>) {
+    LOG.with(|l| {
+        let mut l = l.borrow_mut();
+        l.push(msg.into());
+        if l.len() > 30 {
+            l.remove(0);
+        }
+    });
+}
+
 pub fn handle(req: &str) -> String {
     let s = st();
     let (cmd, arg) = req.split_once(' ').unwrap_or((req, ""));
@@ -70,6 +85,7 @@ fn state() -> J {
         "key_mode": win::key_mode(),
         "grid": grid_state,
         "can_undo": s.can_undo(),
+        "log": LOG.with(|l| l.borrow().clone()),
     })
 }
 

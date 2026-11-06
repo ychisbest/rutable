@@ -66,6 +66,7 @@ fn move_sel(g: Grid, dr: isize, dc: isize, extend: bool, jump: bool) {
 /// Handles a key the window thread took for the grid.
 pub fn key(g: Grid, k: Key) {
     let s = st();
+    crate::ui::automation::log(format!("key {} ctrl={} shift={} mode={}", k.vk, k.ctrl, k.shift, crate::win::key_mode()));
     // A list editor (options, a date...) has the keys first.
     if let Some(e) = g.editing.get_untracked() {
         if e.mode != EditMode::Text {
@@ -152,6 +153,7 @@ pub fn key(g: Grid, k: Key) {
                 let sel = g.sel.get_untracked().unwrap();
                 g.sel.set(Some(Sel::cell(sel.ar, sel.ac)));
             } else {
+                crate::ui::automation::log("sel reset: escape");
                 g.sel.set(None);
             }
         }

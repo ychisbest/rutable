@@ -39,8 +39,12 @@ pub fn record_slot(table: Id, record: Id, field: Id) -> Slot {
 }
 
 pub fn record_card() -> Option<AnyElement> {
+    let (table, record) = st().expanded.get()?;
+    untracked(move || card_body(table, record))
+}
+
+fn card_body(table: Id, record: Id) -> Option<AnyElement> {
     let s = st();
-    let (table, record) = s.expanded.get()?;
     let exists = s.read(|b| b.table(&table).and_then(|t| t.record(&record)).is_some());
     if !exists {
         return None;

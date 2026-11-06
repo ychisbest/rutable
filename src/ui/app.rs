@@ -41,6 +41,13 @@ pub fn RutableApp() -> impl IntoElement {
     });
     on_key("mod+/", move |_| st().popup.set(Some(super::state::Popup::Shortcuts)));
 
+    // What the main area shows changes only with these.
+    let is_dash = computed(move || {
+        let cur = s.cur.get();
+        s.read(|b| b.dashboard(&cur).is_some())
+    });
+    let view_kind = computed(move || s.view_kind());
+
     // The window's title follows the base's name.
     effect(move || {
         let name = s.read(|b| b.name.clone());
@@ -59,16 +66,15 @@ pub fn RutableApp() -> impl IntoElement {
                 .child(when(move || s.sidebar.get(), sidebar::sidebar))
                 .child(view().flex_1().min_w(px(0.0)).child(dynamic(move || {
                     let cur = s.cur.get();
-                    let is_dash = s.read(|b| b.dashboard(&cur).is_some());
-                    if is_dash {
+                    if is_dash.get() {
                         return dashboard::dashboard(cur).into_element();
                     }
                     view()
                         .flex_1()
                         .child(header::view_tabs())
                         .child(dynamic(move || {
-                            let kind = s.view_kind();
-                            match kind {
+                            let _ = s.view.get();
+                            match view_kind.get() {
                                 Some(ViewKind::Grid) => vec![header::toolbar(ViewKind::Grid).into_element(), grid::grid_view().into_element()],
                                 Some(ViewKind::Kanban) => vec![header::toolbar(ViewKind::Kanban).into_element(), kanban::kanban().into_element()],
                                 Some(ViewKind::Gallery) => vec![header::toolbar(ViewKind::Gallery).into_element(), gallery::gallery().into_element()],

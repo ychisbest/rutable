@@ -225,7 +225,7 @@ pub fn sample() -> Base {
     grid.widths = HashMap::from([(t_name.id.clone(), 200.0), (t_note.id.clone(), 220.0)]);
     grid.stats.insert(t_hours.id.clone(), Stat::Sum);
     grid.stats.insert(t_progress.id.clone(), Stat::Average);
-    let mut by_owner = View::new("按负责人分组", ViewKind::Grid);
+    let mut by_owner = View::new("按状态分组", ViewKind::Grid);
     by_owner.groups = vec![SortRule { field: t_status.id.clone(), desc: false }];
     by_owner.widths = grid.widths.clone();
     let mut mine = View::new("我负责的", ViewKind::Grid);

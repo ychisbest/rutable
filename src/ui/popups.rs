@@ -20,6 +20,10 @@ fn close() {
 
 pub fn popup() -> Option<AnyElement> {
     let p = st().popup.get()?;
+    untracked(move || build(p))
+}
+
+fn build(p: Popup) -> Option<AnyElement> {
     Some(match p {
         Popup::FieldMenu { field, x, y } => field_menu(field, x, y).into_element(),
         Popup::FieldEditor { field, at, x, y } => field_editor::field_editor(field, at, x, y).into_element(),
