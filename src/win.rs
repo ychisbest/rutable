@@ -69,6 +69,8 @@ pub enum Cmd {
     Key(Key),
     /// The wheel over the grid: (dx, dy) in points.
     Wheel(f32, f32),
+    /// The window is closing: save, then call [`close_now`].
+    Close,
     /// An automation request; the answer goes back on the channel.
     Automation(String, std::sync::mpsc::Sender<String>),
 }
@@ -107,6 +109,30 @@ pub fn set_grid_rect(x: f32, y: f32, w: f32, h: f32) {
 
 pub fn set_grid_wheel(on: bool) {
     GRID_WHEEL.store(on, Ordering::Relaxed);
+}
+
+static CLOSING: AtomicBool = AtomicBool::new(false);
+
+/// Closes the window for good (after the document is saved).
+pub fn close_now() {
+    CLOSING.store(true, Ordering::Relaxed);
+    unsafe {
+        let _ = PostMessageW(Some(hwnd()), WM_CLOSE, WPARAM(0), LPARAM(0));
+    }
+}
+
+/// Asks the UI to save before the window closes.
+unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> windows::Win32::Foundation::LRESULT {
+    if msg == WM_CLOSE && !CLOSING.load(Ordering::Relaxed) {
+        send(Cmd::Close);
+        // If the UI does not answer, close anyway.
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            close_now();
+        });
+        return windows::Win32::Foundation::LRESULT(0);
+    }
+    unsafe { windows::Win32::UI::Shell::DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
 fn hwnd() -> HWND {
@@ -289,6 +315,9 @@ fn ui_thread() {
     let hwnd = view.hwnd();
     HWND_RAW.store(hwnd.0 as isize, Ordering::Relaxed);
 
+    unsafe {
+        let _ = windows::Win32::UI::Shell::SetWindowSubclass(hwnd, Some(subclass), 1, 0);
+    }
     if let Some(port) = crate::args::automation_port() {
         start_automation(port);
     }

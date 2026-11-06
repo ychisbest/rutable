@@ -65,6 +65,8 @@ pub struct St {
     /// The window's size in points.
     pub window: Signal<(f32, f32)>,
     saving: Stored<bool>,
+    dirty_at: Stored<i64>,
+    toast_until: Stored<i64>,
 }
 
 thread_local! {
@@ -127,6 +129,8 @@ impl St {
             notices: signal(vec![]),
             window: signal((1440.0, 900.0)),
             saving: stored(false),
+            dirty_at: stored(0),
+            toast_until: stored(0),
         };
         ST.with(|x| *x.borrow_mut() = Some(s));
         s
@@ -218,15 +222,23 @@ impl St {
         }
     }
 
+    /// Marks the document unsaved; the root's ticker saves it.
     fn schedule_save(&self) {
-        if self.saving.with(|s| std::mem::replace(s, true)) {
-            return;
+        self.saving.with(|s| *s = true);
+        self.dirty_at.with(|t| *t = crate::model::now_ms());
+    }
+
+    /// Runs every few hundred milliseconds from the root: saves a changed
+    /// document once it has rested, hides an old toast.
+    pub fn tick(&self) {
+        let now = crate::model::now_ms();
+        if self.saving.with(|s| *s) && now - self.dirty_at.with(|t| *t) > 500 {
+            self.saving.with(|s| *s = false);
+            self.save_now();
         }
-        let me = *self;
-        set_timeout(std::time::Duration::from_millis(600), move || {
-            me.saving.with(|s| *s = false);
-            me.save_now();
-        });
+        if self.toast.get_untracked().is_some() && now > self.toast_until.with(|t| *t) {
+            self.toast.set(None);
+        }
     }
 
     pub fn save_now(&self) {
@@ -243,12 +255,7 @@ impl St {
     pub fn toast(&self, text: &str) {
         let id = self.toast.get_untracked().map(|t| t.1 + 1).unwrap_or(1);
         self.toast.set(Some((text.to_string(), id)));
-        let me = *self;
-        set_timeout(std::time::Duration::from_millis(2200), move || {
-            if me.toast.get_untracked().map(|t| t.1) == Some(id) {
-                me.toast.set(None);
-            }
-        });
+        self.toast_until.with(|t| *t = crate::model::now_ms() + 2200);
     }
 
     /// The current table's id ("" on a dashboard).

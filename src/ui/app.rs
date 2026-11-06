@@ -28,12 +28,18 @@ pub fn RutableApp() -> impl IntoElement {
                     super::automation::log(format!("wheel {dx} {dy}"));
                     super::wheel::dispatch(dx, dy)
                 }
+                win::Cmd::Close => {
+                    st().save_now();
+                    win::close_now();
+                }
                 win::Cmd::Automation(req, tx) => {
                     let _ = tx.send(automation::handle(&req));
                 }
             }
         }
     });
+    // Saving and toasts run on the root's own clock.
+    set_interval(std::time::Duration::from_millis(250), move || s.tick());
     // Ctrl+Z / Ctrl+Y outside the grid (sidebar, views) still undo.
     on_key_with("mod+z", KeyOptions { when: nsh_core::keymap::When::NotEditing, ..KeyOptions::default() }, move |_| st().undo());
     on_key_with("mod+y", KeyOptions { when: nsh_core::keymap::When::NotEditing, ..KeyOptions::default() }, move |_| st().redo());
