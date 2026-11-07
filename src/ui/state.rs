@@ -29,6 +29,7 @@ pub enum Popup {
     More { x: f32, y: f32 },
     Shortcuts,
     Workflows,
+    Server,
     Permissions,
     Share,
     Identity { x: f32, y: f32 },
@@ -37,6 +38,8 @@ pub enum Popup {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Confirm {
+    ReloadServer,
+    DiscardAndClose,
     DeleteField(Id),
     DeleteRecords(Vec<Id>),
     DeleteView(Id),
@@ -46,6 +49,16 @@ pub enum Confirm {
 #[derive(Clone, Copy)]
 pub struct St {
     pub doc: Stored<Base>,
+    pub cloud_busy: Signal<bool>,
+    pub cloud_status: Signal<String>,
+    pub cloud_error: Signal<Option<String>>,
+    cloud_next: Stored<i64>,
+    pub loaded: Signal<bool>,
+    pub uploads: Signal<usize>,
+    pub server_url: Signal<String>,
+    pub server: Stored<Option<crate::api::Config>>,
+    baseline: Stored<Option<crate::api::Snapshot>>,
+    closing: Stored<bool>,
     /// Bumps on every change of the document.
     pub rev: Signal<u64>,
     undo: Stored<Vec<Base>>,
@@ -70,8 +83,6 @@ pub struct St {
     saving: Stored<bool>,
     dirty_at: Stored<i64>,
     toast_until: Stored<i64>,
-    file_time: Stored<Option<std::time::SystemTime>>,
-    ticks: Stored<u64>,
 }
 
 thread_local! {
@@ -82,42 +93,23 @@ pub fn st() -> St {
     ST.with(|s| s.borrow().expect("state"))
 }
 
-pub fn data_path() -> std::path::PathBuf {
-    if let Some(p) = crate::args::data_file() {
-        return p.into();
-    }
-    let dir = std::env::var("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(|_| ".".into()).join("Rutable");
-    let _ = std::fs::create_dir_all(&dir);
-    dir.join("base.json")
-}
-
-/// The folder attachments are copied to.
-pub fn files_dir() -> std::path::PathBuf {
-    let dir = data_path().parent().map(|p| p.join("files")).unwrap_or_else(|| "files".into());
-    let _ = std::fs::create_dir_all(&dir);
-    dir
-}
-
-fn load() -> Base {
-    if crate::args::fresh() {
-        return sample::sample();
-    }
-    if let Ok(text) = std::fs::read_to_string(data_path()) {
-        match serde_json::from_str::<Base>(&text) {
-            Ok(b) if !b.tables.is_empty() => return b,
-            Ok(_) => {}
-            Err(e) => log::error!("cannot read the document: {e}"),
-        }
-    }
-    sample::sample()
-}
-
 impl St {
     pub fn init() -> St {
-        let base = load();
+        let base = sample::empty();
+        let config=crate::api::Config::from_env().ok();
         let first = base.sidebar().first().cloned().unwrap_or_default();
         let view = base.table(&first).and_then(|t| t.views.first()).map(|v| v.id.clone()).unwrap_or_default();
         let s = St {
+            cloud_status: signal("尚未连接服务器".into()),
+            loaded: signal(false),
+            uploads: signal(0),
+            server_url: signal(crate::args::api_url()),
+            server: stored(config),
+            baseline: stored(None),
+            closing: stored(false),
+            cloud_busy: signal(false),
+            cloud_error: signal(None),
+            cloud_next: stored(0),
             doc: stored(base),
             rev: signal(0),
             undo: stored(vec![]),
@@ -136,8 +128,6 @@ impl St {
             saving: stored(false),
             dirty_at: stored(0),
             toast_until: stored(0),
-            file_time: stored(None),
-            ticks: stored(0),
         };
         ST.with(|x| *x.borrow_mut() = Some(s));
         s
@@ -158,13 +148,17 @@ impl St {
     pub fn edit<R>(&self, f: impl FnOnce(&mut Base) -> R) -> R {
         let snapshot = self.doc.with(|b| b.clone());
         self.undo.with(|u| {
-            u.push(snapshot);
+            u.push(snapshot.clone());
             if u.len() > 100 {
                 u.remove(0);
             }
         });
         self.redo.with(|r| r.clear());
         let out = self.doc.with(f);
+        if !self.loaded.get_untracked() {
+            self.doc.with(|b|*b=snapshot);self.undo.with(|u|{u.pop();});
+            self.toast("请先连接服务器并读取文档");self.rev.update(|r|*r+=1);return out;
+        }
         // 高级权限: an identity that may only read the open table changes nothing.
         if self.read_only() {
             let prev = self.undo.with(|u| u.pop());
@@ -184,6 +178,7 @@ impl St {
         query::invalidate();
         self.rev.update(|r| *r += 1);
         self.schedule_save();
+        self.cloud_status.set("修改尚未保存到服务器".into());
     }
 
     /// The current identity may not edit the open table.
@@ -212,6 +207,7 @@ impl St {
     }
 
     pub fn undo(&self) {
+        if !self.loaded.get_untracked() {return}
         let Some(prev) = self.undo.with(|u| u.pop()) else {
             self.toast("没有可撤销的操作");
             return;
@@ -223,6 +219,7 @@ impl St {
     }
 
     pub fn redo(&self) {
+        if !self.loaded.get_untracked() {return}
         let Some(next) = self.redo.with(|u| u.pop()) else {
             self.toast("没有可重做的操作");
             return;
@@ -261,58 +258,87 @@ impl St {
         self.dirty_at.with(|t| *t = crate::model::now_ms());
     }
 
-    /// Runs every few hundred milliseconds from the root: saves a changed
-    /// document once it has rested, hides an old toast.
+    /// The document and undo history live only in RAM. SQLite is owned by the API.
     pub fn tick(&self) {
-        let now = crate::model::now_ms();
-        if self.saving.with(|s| *s) && now - self.dirty_at.with(|t| *t) > 500 {
-            self.saving.with(|s| *s = false);
-            self.save_now();
-        }
-        if self.toast.get_untracked().is_some() && now > self.toast_until.with(|t| *t) {
-            self.toast.set(None);
-        }
-        // Another window saved the document: take its changes.
-        let tick = self.ticks.with(|t| {
-            *t += 1;
-            *t
-        });
-        if tick % 4 == 0 && !self.saving.with(|s| *s) {
-            let path = data_path();
-            let m = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-            let known = self.file_time.with(|t| *t);
-            if m.is_some() && known.is_some() && m != known {
-                self.file_time.with(|t| *t = m);
-                if let Ok(text) = std::fs::read_to_string(&path) {
-                    if let Ok(b) = serde_json::from_str::<Base>(&text) {
-                        let me = self.peek(|x| x.me.clone());
-                        self.doc.with(|d| {
-                            *d = b;
-                            d.me = me;
-                        });
-                        query::invalidate();
-                        self.rev.update(|r| *r += 1);
-                        self.fix_selection();
-                        self.toast("已同步其他窗口的修改");
-                    }
-                }
-            } else if known.is_none() {
-                self.file_time.with(|t| *t = m);
-            }
+        let now=crate::model::now_ms();
+        if self.toast.get_untracked().is_some()&&now>self.toast_until.with(|t|*t) {self.toast.set(None);}
+        if self.cloud_busy.get_untracked()||self.server.with(|c|c.is_none()) {return}
+        let dirty=self.saving.with(|v|*v);
+        if (dirty&&now-self.dirty_at.with(|t|*t)>350 || !dirty&&now>=self.cloud_next.with(|t|*t))
+            && super::grid::grid().is_none_or(|g|g.editing.get_untracked().is_none()) {
+            self.start_cloud_sync();
         }
     }
-
-    pub fn save_now(&self) {
-        let json = self.doc.with(|b| serde_json::to_string(b));
-        if let Ok(json) = json {
-            let path = data_path();
-            let tmp = path.with_extension("json.tmp");
-            if std::fs::write(&tmp, json).is_ok() {
-                let _ = std::fs::rename(&tmp, &path);
+    pub fn server_revision(&self)->Option<u64> {self.baseline.with(|b|b.as_ref().map(|s|s.revision))}
+    pub fn is_dirty(&self)->bool {self.saving.with(|v|*v)}
+    pub fn connect_server(&self,config:crate::api::Config) {
+        if self.cloud_busy.get_untracked()||self.uploads.get_untracked()>0 {self.toast("服务器请求或附件上传执行中，请稍候");return}
+        if self.is_dirty() {self.toast("请先保存当前修改，再切换连接");return}
+        self.server_url.set(config.url.clone());self.server.with(|c|*c=Some(config));
+        self.baseline.with(|b|*b=None);self.loaded.set(false);self.cloud_error.set(None);self.start_cloud_sync();
+    }
+    pub fn reload_server(&self) {
+        if self.cloud_busy.get_untracked() {self.toast("服务器请求执行中，请稍候");return}
+        self.saving.with(|v|*v=false);self.baseline.with(|b|*b=None);self.loaded.set(false);self.start_cloud_sync();
+    }
+    pub fn start_cloud_sync(&self) {
+        if self.cloud_busy.get_untracked() {return}
+        let Some(config)=self.server.with(|c|c.clone()) else {self.popup.set(Some(Popup::Server));return};
+        let submitted=self.peek(Clone::clone);let baseline=self.baseline.with(|v|v.clone());let dirty=self.is_dirty();
+        self.cloud_busy.set(true);self.cloud_status.set(if dirty {"正在保存到服务器…"}else{"正在读取服务器…"}.into());
+        let (tx,rx)=async_channel::bounded(1);let request=submitted.clone();
+        std::thread::spawn(move || {let result=crate::api::sync(&config,baseline.as_ref(),&request,dirty);let _=tx.send_blocking(result);});
+        let s=*self;
+        spawn(async move {
+            match rx.recv().await {
+                Ok(Ok(crate::api::Outcome::Unchanged))=>{s.cloud_error.set(None);s.cloud_status.set(if s.is_dirty(){"修改尚未保存到服务器"}else{"已与服务器同步"}.into());},
+                Ok(Ok(crate::api::Outcome::Loaded(snapshot)))=>{
+                    let was_loaded=s.loaded.get_untracked();let current=s.peek(Clone::clone);
+                    let merged=if was_loaded {crate::api::merge(&submitted,&current,&snapshot.document)}else{Ok(snapshot.document.clone())};
+                    match merged {
+                        Ok(document)=>{
+                            let dirty=serde_json::to_value(&document).unwrap()!=serde_json::to_value(&snapshot.document).unwrap();
+                            let remote_changed=serde_json::to_value(&submitted).unwrap()!=serde_json::to_value(&snapshot.document).unwrap();
+                            s.doc.with(|b|*b=document);s.baseline.with(|b|*b=Some(snapshot));s.loaded.set(true);
+                            s.saving.with(|v|*v=dirty);s.cloud_error.set(None);
+                            s.cloud_status.set(if dirty {"修改尚未保存到服务器"}else{"已保存到服务器"}.into());
+                            if remote_changed {s.undo.with(|u|u.clear());s.redo.with(|u|u.clear());}
+                            query::invalidate();s.rev.update(|r|*r+=1);s.fix_selection();
+                            if !was_loaded {s.popup.set(None);}
+                        }
+                        Err(error)=>s.sync_failed(&error.to_string()),
+                    }
+                }
+                Ok(Err(error))=>s.sync_failed(&error.to_string()),
+                Err(_)=>s.sync_failed("服务器请求中断，修改仍在内存中"),
             }
-            let m = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-            self.file_time.with(|t| *t = m);
-        }
+            s.cloud_busy.set(false);s.cloud_next.with(|t|*t=crate::model::now_ms()+3000);
+            if s.closing.with(|v|*v) {
+                if s.cloud_error.get_untracked().is_some() {s.closing.with(|v|*v=false);s.popup.set(Some(Popup::Server));}
+                else if s.uploads.get_untracked()>0 {}
+                else if !s.is_dirty() {crate::win::close_now();}
+                else {s.start_cloud_sync();}
+            }
+        });
+    }
+    fn sync_failed(&self,error:&str) {
+        self.cloud_error.set(Some(error.into()));self.cloud_status.set("连接失败，修改尚未保存".into());
+        self.dirty_at.with(|t|*t=crate::model::now_ms()+4000);
+    }
+    pub fn save_now(&self) {self.start_cloud_sync();}
+    pub fn upload_failed(&self,error:&str) {
+        self.cloud_error.set(Some(error.into()));self.cloud_status.set("附件上传未完成".into());
+        if self.closing.with(|v|*v) {self.closing.with(|v|*v=false);self.popup.set(Some(Popup::Server));}
+    }
+    pub fn upload_finished(&self) {
+        self.uploads.update(|v|*v=v.saturating_sub(1));
+        if self.closing.with(|v|*v)&&self.uploads.get_untracked()==0 {self.request_close();}
+    }
+    pub fn request_close(&self) {
+        if let Some(g)=super::grid::grid() {if g.editing.get_untracked().is_some(){super::grid::edit::commit(g);}}
+        if self.uploads.get_untracked()>0 {self.closing.with(|v|*v=true);self.cloud_status.set("正在等待附件上传完成…".into());return}
+        if !self.is_dirty()&&!self.cloud_busy.get_untracked() {crate::win::close_now();return}
+        self.closing.with(|v|*v=true);self.save_now();
     }
 
     pub fn toast(&self, text: &str) {

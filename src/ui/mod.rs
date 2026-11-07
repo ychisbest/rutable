@@ -7,6 +7,7 @@ pub mod calendar;
 pub mod cells;
 pub mod dashboard;
 pub mod field_editor;
+pub mod server;
 pub mod form;
 pub mod gallery;
 pub mod gantt;

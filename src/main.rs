@@ -5,7 +5,8 @@
 #![allow(dead_code)]
 
 mod args;
-mod model;
+mod api;
+use rutable_model::model;
 mod ui;
 mod win;
 

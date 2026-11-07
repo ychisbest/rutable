@@ -478,6 +478,14 @@ pub fn shell_open(target: &str) {
 
 /// Opens Explorer at the attachment and selects it, without opening the file.
 pub fn reveal_file(path: &str) {
+    if path.starts_with("rutable://attachment/") {
+        let Some(config)=st().server.with(|v|v.clone()) else {st().toast("请先连接服务器");return};
+        let path=path.to_string();let (tx,rx)=async_channel::bounded(1);
+        std::thread::spawn(move ||{let result=config.attachment_link(&path);let _=tx.send_blocking(result);});
+        spawn(async move {match rx.recv().await {
+            Ok(Ok(url))=>shell_open(&url),Ok(Err(error))=>st().toast(&error.to_string()),Err(_)=>st().toast("无法获取在线附件链接"),
+        }});return;
+    }
     use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
     let Ok(path) = std::fs::canonicalize(path) else {
         st().toast("附件不存在或无法访问，无法打开文件位置");

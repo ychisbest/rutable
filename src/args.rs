@@ -16,15 +16,10 @@ pub fn automation_port() -> Option<u16> {
     Some(a.get(i + 1).and_then(|p| p.parse().ok()).unwrap_or(47800))
 }
 
-pub fn data_file() -> Option<String> {
-    value("--data")
-}
-
 pub fn maximized() -> bool {
     args().iter().any(|x| x == "--maximized")
 }
 
-/// Starts from an empty document instead of the sample one.
-pub fn fresh() -> bool {
-    args().iter().any(|x| x == "--fresh")
-}
+/// Connection settings are read from arguments / environment, never a local data file.
+pub fn api_url() -> String {value("--api").or_else(||std::env::var("RUTABLE_API_URL").ok()).unwrap_or("https://rutable.ych.show".into())}
+pub fn document_id() -> String {value("--document").or_else(||std::env::var("RUTABLE_DOCUMENT_ID").ok()).unwrap_or("default".into())}

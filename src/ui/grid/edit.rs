@@ -353,31 +353,26 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Copies files into the app's folder and adds them to a record's cell.
-pub fn attach(table: &str, record: &str, field: &str, paths: Vec<String>) {
-    let s = st();
-    let dir = crate::ui::state::files_dir();
-    let mut files = vec![];
-    for p in paths {
-        let src = std::path::Path::new(&p);
-        let Some(name) = src.file_name().map(|n| n.to_string_lossy().to_string()) else { continue };
-        let dest = dir.join(format!("{}_{}", new_id(""), name));
-        if std::fs::copy(src, &dest).is_ok() {
-            let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-            files.push(crate::model::Attachment { name, path: dest.to_string_lossy().to_string(), size });
-        }
-    }
-    if files.is_empty() {
-        return;
-    }
-    let mut cur = s.peek(|b| match b.table(table).and_then(|t| t.record(record)).and_then(|r| r.cells.get(field)) {
-        Some(Value::Files(f)) => f.clone(),
-        _ => vec![],
+/// Read explicitly selected files and upload bytes directly; no local attachment copy.
+pub fn attach(table:&str,record:&str,field:&str,paths:Vec<String>) {
+    let s=st();let Some(config)=s.server.with(|v|v.clone()) else {s.toast("请先连接服务器");return};
+    if !s.loaded.get_untracked() {s.toast("请先读取服务器文档");return}
+    let (table,record,field)=(table.to_string(),record.to_string(),field.to_string());
+    let (tx,rx)=async_channel::bounded(1);s.uploads.update(|v|*v+=1);s.toast("正在上传附件…");
+    std::thread::spawn(move ||{
+        let mut files=vec![];let mut errors=vec![];
+        for path in paths {match config.upload(std::path::Path::new(&path)) {Ok(file)=>files.push(file),Err(e)=>errors.push(e.to_string())}}
+        let _=tx.send_blocking((files,errors));
     });
-    let n = files.len();
-    cur.extend(files);
-    s.set_cells(table, &[(record.to_string(), field.to_string(), Some(Value::Files(cur)))]);
-    s.toast(&format!("已上传 {n} 个附件"));
+    spawn(async move {if let Ok((files,errors))=rx.recv().await {
+        let count=files.len();
+        if !files.is_empty() {
+            let mut current=s.peek(|b|match b.table(&table).and_then(|t|t.record(&record)).and_then(|r|r.cells.get(&field)) {Some(Value::Files(files))=>files.clone(),_=>vec![]});
+            current.extend(files);s.set_cells(&table,&[(record,field,Some(Value::Files(current)))]);
+        }
+        if let Some(error)=errors.first() {s.upload_failed(error);s.toast(error)}else{s.toast(&format!("已上传 {count} 个附件到服务器"))}
+        s.upload_finished();
+    }else{s.upload_failed("附件上传线程中断");s.upload_finished();s.toast("附件上传线程中断");}});
 }
 
 pub fn pick_files(g: Grid, record: Id, field: Id) {

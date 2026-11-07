@@ -13,6 +13,8 @@ use crate::{model::ViewKind, win};
 #[component]
 pub fn RutableApp() -> impl IntoElement {
     let s = St::init();
+    s.popup.set(Some(super::state::Popup::Server));
+    if s.server.with(|c|c.is_some()) {s.start_cloud_sync();}
 
     // Commands from the window thread (keys, wheel) and the automation port.
     spawn(async move {
@@ -29,8 +31,7 @@ pub fn RutableApp() -> impl IntoElement {
                     super::wheel::dispatch(dx, dy)
                 }
                 win::Cmd::Close => {
-                    st().save_now();
-                    win::close_now();
+                    st().request_close();
                 }
                 win::Cmd::Automation(req, tx) => {
                     let _ = tx.send(automation::handle(&req));
@@ -46,7 +47,7 @@ pub fn RutableApp() -> impl IntoElement {
     on_key_with("mod+shift+z", KeyOptions { when: nsh_core::keymap::When::NotEditing, ..KeyOptions::default() }, move |_| st().redo());
     on_key("mod+s", move |_| {
         st().save_now();
-        st().toast("已保存");
+
     });
     on_key("mod+f", move |_| st().search_open.set(true));
     on_key("mod+/", move |_| st().popup.set(Some(super::state::Popup::Shortcuts)));

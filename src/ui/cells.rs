@@ -204,7 +204,7 @@ pub fn progress(p: Painter, x: f32, y_mid: f32, w: f32, v: f64, color: u8) -> Pa
 }
 
 pub fn file_thumb(p: Painter, a: &crate::model::Attachment, x: f32, y: f32, s: f32) -> Painter {
-    if a.is_image() {
+    if a.is_image() && !a.path.starts_with("rutable://") {
         let url = file_url(&a.path);
         let p = rrect(p, x, y, s, s, 3.0, 0xF2F3F5);
         p.save()

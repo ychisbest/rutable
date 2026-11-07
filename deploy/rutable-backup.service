@@ -1,0 +1,6 @@
+[Unit]
+Description=Back up Rutable SQLite on the server
+[Service]
+Type=oneshot
+ExecStart=/opt/rutable/backup.sh
+UMask=0077

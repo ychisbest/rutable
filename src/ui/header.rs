@@ -95,7 +95,7 @@ pub fn top_bar() -> impl IntoElement {
         .child(
             text(move || {
                 let _ = s.rev.get();
-                "已保存到本地".to_string()
+                s.cloud_status.get()
             })
             .text_size(px(12.0))
             .text_color(rgb(TEXT3)),
@@ -128,6 +128,7 @@ pub fn top_bar() -> impl IntoElement {
                         .child(text(move || s.notices.get().len().to_string()).text_size(px(10.0)).text_color(rgb(0xFFFFFF)))
                 })),
         )
+        .child(widgets::button("服务器", move || st().popup.set(Some(Popup::Server))))
         .child(widgets::primary_button("分享", move || st().popup.set(Some(Popup::Share))))
         .child({
             let at = element_ref();

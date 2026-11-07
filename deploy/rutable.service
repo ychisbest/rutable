@@ -1,0 +1,26 @@
+[Unit]
+Description=Rutable Rust API and SQLite storage
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rutable
+Group=rutable
+EnvironmentFile=/etc/rutable/server.env
+WorkingDirectory=/var/lib/rutable
+ExecStart=/opt/rutable/rutable-server
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/rutable
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

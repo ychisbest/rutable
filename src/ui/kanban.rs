@@ -23,7 +23,7 @@ pub fn card(table: Id, record: Id, width: f32, cover_h: f32) -> AnyElement {
         let r = t.record(&record)?;
         let fields: Vec<Field> = t.view_fields(v).into_iter().filter(|(_, h)| !h).map(|(f, _)| f.clone()).collect();
         let cover = v.cover_field.as_ref().and_then(|cf| match r.cells.get(cf) {
-            Some(Value::Files(f)) => f.iter().find(|a| a.is_image()).cloned(),
+            Some(Value::Files(f)) => f.iter().find(|a| a.is_image() && !a.path.starts_with("rutable://")).cloned(),
             _ => None,
         });
         let title = value::record_title(b, t, &r.id);

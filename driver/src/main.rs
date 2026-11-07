@@ -434,6 +434,8 @@ fn main() {
         for line in lines {
             run(&line, port);
             let _ = std::io::stdout().flush();
+            // A failed precondition must stop the script before later UI mutations.
+            if FAILED.load(std::sync::atomic::Ordering::Relaxed)>0 {break;}
         }
         let failed = FAILED.load(std::sync::atomic::Ordering::Relaxed);
         println!("{} failed", failed);

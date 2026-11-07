@@ -39,7 +39,7 @@ pub fn handle(req: &str) -> String {
         }
         "save" => {
             s.save_now();
-            json!({"ok": true, "path": super::state::data_path().to_string_lossy()})
+            json!({"accepted":true,"storage":"server","pending":s.is_dirty()})
         }
         _ => json!({"error": format!("unknown request {cmd}")}),
     };
@@ -77,6 +77,7 @@ fn state() -> J {
     });
     json!({
         "doc": names,
+        "cloud": {"connected":s.loaded.get_untracked(),"pending":s.is_dirty(),"storage":"server","revision":s.server_revision(),"busy":s.cloud_busy.get_untracked(),"status":s.cloud_status.get_untracked(),"error":s.cloud_error.get_untracked()},
         "popup": s.popup.get_untracked().map(|p| format!("{p:?}")),
         "expanded": s.expanded.get_untracked(),
         "toast": s.toast.get_untracked().map(|t| t.0),

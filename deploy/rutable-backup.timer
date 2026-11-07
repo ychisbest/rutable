@@ -1,0 +1,7 @@
+[Unit]
+Description=Daily Rutable server backup
+[Timer]
+OnCalendar=daily
+Persistent=true
+[Install]
+WantedBy=timers.target

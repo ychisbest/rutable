@@ -17,6 +17,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 log = "0.4"
+rutable-model = { path = "model" }
+ureq = { version = "3", features = ["json"] }
+url = "2"
 
 [dependencies.windows]
 version = "0.62"
@@ -51,4 +54,4 @@ codegen-units = 4
 strip = true
 
 [workspace]
-members = [".", "driver"]
+members = [".", "driver", "model", "server"]

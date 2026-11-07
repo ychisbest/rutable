@@ -41,6 +41,7 @@ fn build(p: Popup) -> Option<AnyElement> {
         Popup::SidebarAdd { x, y } => sidebar_add(x, y).into_element(),
         Popup::More { x, y } => more_menu(x, y).into_element(),
         Popup::Shortcuts => shortcuts().into_element(),
+        Popup::Server => super::server::dialog().into_element(),
         Popup::Workflows => workflows().into_element(),
         Popup::Permissions => permissions().into_element(),
         Popup::Share => share().into_element(),
@@ -1356,6 +1357,7 @@ fn more_menu(x: f32, y: f32) -> impl IntoElement {
 // Dialogs.
 
 fn confirm(title: String, body: String, action: Confirm) -> impl IntoElement {
+    let confirm_label = match action {Confirm::ReloadServer=>"重新读取",Confirm::DiscardAndClose=>"仍然退出",_=>"删除"};
     let action2 = action;
     modal(
         420.0,
@@ -1384,7 +1386,7 @@ fn confirm(title: String, body: String, action: Confirm) -> impl IntoElement {
                                 close();
                                 run_confirm(action2.clone());
                             })
-                            .child(text("删除").text_size(px(14.0)).text_color(rgb(0xFFFFFF))),
+                            .child(text(confirm_label).text_size(px(14.0)).text_color(rgb(0xFFFFFF))),
                     ),
             ),
     )
@@ -1393,6 +1395,8 @@ fn confirm(title: String, body: String, action: Confirm) -> impl IntoElement {
 fn run_confirm(action: Confirm) {
     let s = st();
     match action {
+        Confirm::ReloadServer => s.reload_server(),
+        Confirm::DiscardAndClose => crate::win::close_now(),
         Confirm::DeleteField(f) => delete_field(&f),
         Confirm::DeleteRecords(ids) => delete_records(&ids),
         Confirm::DeleteView(v) => {
@@ -1805,7 +1809,7 @@ fn share() -> impl IntoElement {
             })
             .collect::<Vec<_>>()
     });
-    let path = super::state::data_path().to_string_lossy().to_string();
+    let path = s.server_url.get_untracked();
     let p2 = path.clone();
     modal(
         520.0,
@@ -1832,7 +1836,7 @@ fn share() -> impl IntoElement {
                     .collect::<Vec<_>>(),
             )
             .child(widgets::separator())
-            .child(text("多维表格文件（放在共享文件夹中，多个窗口打开同一文件会自动同步修改）").text_size(px(12.0)).text_color(rgb(TEXT3)))
+            .child(text("数据由服务器统一保存，其他客户端连接相同服务器和文档 ID 即可读取。").text_size(px(12.0)).text_color(rgb(TEXT3)))
             .child(text(path).text_size(px(12.0)).text_color(rgb(TEXT)))
             .child(
                 view()
@@ -1840,9 +1844,9 @@ fn share() -> impl IntoElement {
                     .justify_end()
                     .gap(px(8.0))
                     .child(widgets::button("高级权限", move || st().popup.set(Some(Popup::Permissions))))
-                    .child(widgets::primary_button("复制文件路径", move || {
+                    .child(widgets::primary_button("复制服务器地址", move || {
                         set_clipboard(p2.clone());
-                        st().toast("已复制文件路径");
+                        st().toast("已复制服务器地址");
                         close();
                     })),
             ),

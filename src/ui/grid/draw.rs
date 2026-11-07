@@ -184,11 +184,14 @@ pub fn paint(g: &Grid) -> Painter {
                                 p = text_at(p, &label, x0 + 22.0, mid, 12.0, TEXT3);
                                 let lx = x0 + 22.0 + text_w(&label, 12.0) + 8.0;
                                 let avail = scroll_left + 400.0;
+                                let shown = v.as_ref().map(|v| value::display(b, t, &f.kind, v)).unwrap_or_else(|| "空".into());
                                 p = match v {
                                     None => text_at(p, "空", lx, mid, 14.0, TEXT3),
+                                    // Numeric cells normally align right; group labels must
+                                    // stay beside the field name inside the frozen header.
+                                    Some(crate::model::Value::Number(_)) => text_at(p, &shown, lx, mid, 14.0, TEXT),
                                     Some(v) => cells::draw_value(p, b, t, &f.kind, Some(v), lx - 8.0, y + (rh - 33.0) / 2.0, avail - lx, 33.0, 1),
                                 };
-                                let shown = v.as_ref().map(|v| value::display(b, t, &f.kind, v)).unwrap_or_else(|| "空".into());
                                 let vw = match v {
                                     Some(crate::model::Value::Options(_)) | Some(crate::model::Value::Users(_)) => text_w(&shown, 12.0) + 34.0,
                                     _ => text_w(&shown, 14.0) + 6.0,

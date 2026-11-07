@@ -125,11 +125,7 @@ pub fn close_now() {
 unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> windows::Win32::Foundation::LRESULT {
     if msg == WM_CLOSE && !CLOSING.load(Ordering::Relaxed) {
         send(Cmd::Close);
-        // If the UI does not answer, close anyway.
-        std::thread::spawn(|| {
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            close_now();
-        });
+        // The UI closes only after a server acknowledgement or explicit discard.
         return windows::Win32::Foundation::LRESULT(0);
     }
     unsafe { windows::Win32::UI::Shell::DefSubclassProc(hwnd, msg, wparam, lparam) }
