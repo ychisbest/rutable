@@ -20,6 +20,33 @@ pub const GROUP_H: f32 = 42.0;
 pub const ADD_H: f32 = 34.0;
 pub const SCROLLBAR: f32 = 10.0;
 
+/// Shared, read-only data of a layout: copying a layout copies a pointer.
+/// Equal only when it is the same computation (the layout changes when
+/// its data is recomputed).
+#[derive(Debug, Default)]
+pub struct Shared<T>(std::rc::Rc<T>);
+impl<T> Shared<T> {
+    pub fn new(v: T) -> Self {
+        Shared(std::rc::Rc::new(v))
+    }
+}
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        Shared(self.0.clone())
+    }
+}
+impl<T> std::ops::Deref for Shared<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+impl<T> PartialEq for Shared<T> {
+    fn eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Col {
     pub field: Id,
@@ -29,6 +56,8 @@ pub struct Col {
     pub x: f32,
     pub w: f32,
     pub stat: Stat,
+    /// The statistic's text, computed with the layout (not per frame).
+    pub stat_text: String,
     pub desc: String,
 }
 
@@ -39,20 +68,22 @@ pub struct Layout {
     pub cols: Vec<Col>,
     pub frozen: usize,
     pub frozen_w: f32,
-    pub rows: Vec<Row>,
-    pub tops: Vec<f32>,
-    pub heights: Vec<f32>,
+    pub rows: Shared<Vec<Row>>,
+    pub tops: Shared<Vec<f32>>,
+    pub heights: Shared<Vec<f32>>,
+    /// Per row: the record's number in the view (1-based; 0 on other rows).
+    pub nums: Shared<Vec<usize>>,
     pub content_h: f32,
     pub content_w: f32,
     pub row_h: f32,
     /// The records shown, in order (for statistics and the count).
-    pub records: Vec<usize>,
-    pub record_ids: Vec<Id>,
+    pub records: Shared<Vec<usize>>,
+    pub record_ids: Shared<Vec<Id>>,
     pub sorted: bool,
     pub grouped: bool,
     pub wrap: bool,
     /// Cells holding the search text: (row, column).
-    pub matches: Vec<(usize, usize)>,
+    pub matches: Shared<Vec<(usize, usize)>>,
 }
 
 impl Layout {
@@ -215,7 +246,24 @@ pub fn grid() -> Option<Grid> {
     GRID.with(|g| *g.borrow())
 }
 
-fn make_layout(resize: Option<(usize, f32)>) -> Layout {
+/// A column being resized: only the columns' positions change, the rows stay.
+fn resized(mut l: Layout, resize: Option<(usize, f32)>) -> Layout {
+    let Some((c, w)) = resize else { return l };
+    if c >= l.cols.len() {
+        return l;
+    }
+    l.cols[c].w = w;
+    let mut x = 0.0;
+    for col in &mut l.cols {
+        col.x = x;
+        x += col.w;
+    }
+    l.frozen_w = l.cols.iter().take(l.frozen).map(|c| c.w).sum();
+    l.content_w = x + ADD_COL;
+    l
+}
+
+fn make_layout() -> Layout {
     let s = st();
     let search = s.search.get();
     s.with_view(|b, t, v| {
@@ -223,12 +271,7 @@ fn make_layout(resize: Option<(usize, f32)>) -> Layout {
         let mut cols = vec![];
         let mut x = 0.0;
         for (i, f) in fields.iter().enumerate() {
-            let mut w = v.widths.get(&f.id).copied().unwrap_or(if i == 0 { 180.0 } else { 150.0 });
-            if let Some((c, rw)) = resize {
-                if c == i {
-                    w = rw;
-                }
-            }
+            let w = v.widths.get(&f.id).copied().unwrap_or(if i == 0 { 180.0 } else { 150.0 });
             let default_stat = Stat::None;
             cols.push(Col {
                 field: f.id.clone(),
@@ -237,6 +280,7 @@ fn make_layout(resize: Option<(usize, f32)>) -> Layout {
                 x,
                 w,
                 stat: v.stats.get(&f.id).copied().unwrap_or(default_stat),
+                stat_text: String::new(),
                 desc: f.description.clone(),
             });
             x += w;
@@ -250,20 +294,35 @@ fn make_layout(resize: Option<(usize, f32)>) -> Layout {
         let mut heights = Vec::with_capacity(rows.len());
         let mut y = 0.0;
         let mut records = vec![];
+        let mut nums = Vec::with_capacity(rows.len());
         for r in &rows {
             let h = match r {
                 Row::Record(i) => {
                     records.push(*i);
+                    nums.push(records.len());
                     row_h
                 }
-                Row::Group { .. } => GROUP_H,
-                Row::Add { .. } => ADD_H,
+                Row::Group { .. } => {
+                    nums.push(0);
+                    GROUP_H
+                }
+                Row::Add { .. } => {
+                    nums.push(0);
+                    ADD_H
+                }
             };
             tops.push(y);
             heights.push(h);
             y += h;
         }
         let record_ids = records.iter().map(|&i| t.records[i].id.clone()).collect();
+        for c in &mut cols {
+            if c.stat != Stat::None {
+                if let Some(f) = t.field(&c.field) {
+                    c.stat_text = crate::model::query::stat(b, t, f, &records, c.stat);
+                }
+            }
+        }
         let mut matches = vec![];
         let q = search.trim().to_lowercase();
         if !q.is_empty() {
@@ -287,18 +346,19 @@ fn make_layout(resize: Option<(usize, f32)>) -> Layout {
             cols,
             frozen,
             frozen_w,
-            rows,
-            tops,
-            heights,
+            rows: Shared::new(rows),
+            tops: Shared::new(tops),
+            nums: Shared::new(nums),
+            heights: Shared::new(heights),
             content_h: y,
             content_w: x + ADD_COL,
             row_h,
-            records,
-            record_ids,
+            records: Shared::new(records),
+            record_ids: Shared::new(record_ids),
             sorted: !v.sorts.is_empty(),
             grouped: !v.groups.is_empty(),
             wrap: v.wrap,
-            matches,
+            matches: Shared::new(matches),
         }
     })
     .unwrap_or_default()
@@ -307,8 +367,11 @@ fn make_layout(resize: Option<(usize, f32)>) -> Layout {
 impl Grid {
     pub fn new() -> Grid {
         let resize_w = signal(None);
+        // Rows only change with the data, the view or the search; a column
+        // drag only moves the columns.
+        let base = computed(make_layout);
         let g = Grid {
-            layout: computed(move || make_layout(resize_w.get())),
+            layout: computed(move || resized(base.get(), resize_w.get())),
             sx: signal(0.0),
             sy: signal(0.0),
             size: signal((0.0, 0.0)),

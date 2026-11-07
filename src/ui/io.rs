@@ -159,7 +159,7 @@ pub fn import_rows(name: &str, rows: Vec<Vec<String>>) -> Id {
                     r.cells.insert(f.id.clone(), v);
                 }
             }
-            t.records.push(r);
+            t.push_record(r);
         }
         let id = t.id.clone();
         b.tables.push(t);
@@ -218,7 +218,7 @@ pub fn append_rows(rows: Vec<Vec<String>>) -> usize {
                     r.cells.insert(fid.clone(), v);
                 }
             }
-            t.records.push(r);
+            t.push_record(r);
             n += 1;
         }
         n

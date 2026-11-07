@@ -1536,7 +1536,7 @@ mod tests {
                     rec.cells.insert("g".into(), Value::Options(g.iter().map(|x| format!("o{}", x.as_str().unwrap())).collect()));
                 }
             }
-            t.records.push(rec);
+            t.push_record(rec);
         }
         b.tables = vec![t];
         let t = &b.tables[0];

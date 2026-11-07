@@ -360,7 +360,7 @@ pub fn paste_text(g: Grid, text: &str) {
             for _ in 0..extra {
                 let r = t.new_record(&me);
                 ids.push(r.id.clone());
-                t.records.push(r);
+                t.push_record(r);
             }
             if extra > 0 {
                 let all: Vec<Id> = t.records.iter().map(|r| r.id.clone()).collect();

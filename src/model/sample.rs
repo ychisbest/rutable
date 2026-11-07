@@ -142,7 +142,7 @@ pub fn sample() -> Base {
             r.cells.insert(p_stage.id.clone(), Value::Options(vec![options[stage].id.clone()]));
         }
         project_ids.push(r.id.clone());
-        projects.records.push(r);
+        projects.push_record(r);
     }
 
     // (name, status, prio, owners, start offset, length, progress, hours, tags, project, done, rating)
@@ -207,7 +207,7 @@ pub fn sample() -> Base {
                 Value::Url { text: "需求文档".into(), link: format!("https://example.com/docs/{}", i + 1) },
             );
         }
-        tasks.records.push(r);
+        tasks.push_record(r);
     }
 
     // The projects' side of the duplex link, and the lookups.
@@ -223,7 +223,7 @@ pub fn sample() -> Base {
         "平均进度",
         FieldKind::Formula { expr: "IF([任务数] = 0, 0, ROUND(AVERAGE([任务].[进度]) * 100, 0) & \"%\")".into() },
     );
-    for r in &mut projects.records {
+    for r in projects.records_mut() {
         let ids: Vec<Id> = tasks
             .records
             .iter()

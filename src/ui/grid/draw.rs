@@ -155,7 +155,7 @@ pub fn paint(g: &Grid) -> Painter {
                             if hovered || is_checked {
                                 p = cells::checkbox(p, 22.0, mid, is_checked);
                             } else {
-                                let num = (l.records.iter().position(|x| x == ri).unwrap_or(0) + 1).to_string();
+                                let num = l.nums[r].to_string();
                                 p = p
                                     .font(&font(12.0))
                                     .fill_color(rgb(TEXT3))
@@ -351,10 +351,7 @@ pub fn paint(g: &Grid) -> Painter {
                     p = text_at(p, &count, 12.0, by + STATS / 2.0, 12.0, TEXT2);
                 }
                 if col.stat != Stat::None {
-                    if let Some(f) = t.field(&col.field) {
-                        let s = query::stat(b, t, f, &l.records, col.stat);
-                        p = cells::text_right(p, &ellipsize(&s, col.w - 16.0, 12.0), cx + col.w - 8.0, by + STATS / 2.0, 12.0, TEXT2);
-                    }
+                    p = cells::text_right(p, &ellipsize(&col.stat_text, col.w - 16.0, 12.0), cx + col.w - 8.0, by + STATS / 2.0, 12.0, TEXT2);
                 } else if hovered {
                     p = cells::text_right(p, "统计", cx + col.w - 24.0, by + STATS / 2.0, 12.0, TEXT3);
                     p = icons::draw(p, "chevron-down", cx + col.w - 22.0, by + STATS / 2.0 - 6.0, 12.0, TEXT3);

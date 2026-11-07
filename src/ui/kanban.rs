@@ -325,7 +325,7 @@ fn add_in(table: &str, key: Option<Id>) {
             r.cells.insert(fid, if matches!(kind, FieldKind::User { .. }) { Value::Users(vec![k]) } else { Value::Options(vec![k]) });
         }
         let id = r.id.clone();
-        t.records.push(r);
+        t.push_record(r);
         crate::ui::automations::on_add(b, &table, &id);
         Some(id)
     });

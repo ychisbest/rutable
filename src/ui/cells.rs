@@ -35,27 +35,42 @@ pub fn text_w(text: &str, size: f32) -> f32 {
     w
 }
 
-/// `text` cut to `width` with "…".
+thread_local! {
+    static CHAR_WIDTHS: RefCell<HashMap<(u32, char), f32>> = RefCell::new(HashMap::new());
+}
+
+/// The width of one character at `size` (measured once per character).
+fn char_w(c: char, size: f32) -> f32 {
+    let key = ((size * 10.0) as u32, c);
+    if let Some(w) = CHAR_WIDTHS.with(|m| m.borrow().get(&key).copied()) {
+        return w;
+    }
+    let w = measure_text(&font(size), c.encode_utf8(&mut [0; 4])).0;
+    CHAR_WIDTHS.with(|m| m.borrow_mut().insert(key, w));
+    w
+}
+
+/// `text` cut to `width` with "…". Widths add up per character, so cells
+/// scrolled into view for the first time shape no text to measure it.
 pub fn ellipsize(text: &str, width: f32, size: f32) -> String {
-    let text = text.replace('\n', " ");
     if width <= 0.0 {
         return String::new();
     }
-    if text_w(&text, size) <= width {
-        return text;
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let (mut lo, mut hi) = (0usize, chars.len());
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let s: String = chars[..mid].iter().collect::<String>() + "…";
-        if text_w(&s, size) <= width {
-            lo = mid;
-        } else {
-            hi = mid - 1;
+    let ell = char_w('…', size);
+    let mut used = 0.0;
+    // The longest prefix that leaves room for "…".
+    let mut fit_with_ell = 0;
+    for (i, c) in text.char_indices() {
+        let c = if c == '\n' { ' ' } else { c };
+        used += char_w(c, size);
+        if used > width {
+            return text[..fit_with_ell].replace('\n', " ") + "…";
+        }
+        if used + ell <= width {
+            fit_with_ell = i + c.len_utf8();
         }
     }
-    chars[..lo].iter().collect::<String>() + "…"
+    text.replace('\n', " ")
 }
 
 /// `text` broken into lines of `width` (at most `max` lines).
@@ -414,6 +429,7 @@ mod resource_tests {
     fn link_whitespace_and_empty_targets_do_not_open() {
         // Supply text metrics without starting a UI surface in the unit test.
         WIDTHS.with(|widths| widths.borrow_mut().insert((140, "Docs".into()), 32.0));
+        CHAR_WIDTHS.with(|widths| widths.borrow_mut().extend("Docs…".chars().map(|c| ((140, c), 8.0))));
         let link = Value::Url { text: "Docs".into(), link: "https://example.com".into() };
         assert_eq!(resource_at(&link, 10.0, 16.5, 200.0, 33.0), Some(None));
         assert_eq!(resource_at(&link, 180.0, 16.5, 200.0, 33.0), None);

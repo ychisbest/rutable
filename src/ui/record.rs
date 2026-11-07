@@ -60,7 +60,7 @@ fn card_body(table: Id, record: Id) -> Option<AnyElement> {
         let record = record.clone();
         move || -> (Option<Id>, Option<Id>, usize, usize) {
             let ids: Vec<Id> = match grid::grid() {
-                Some(g) if st().view_kind() == Some(crate::model::ViewKind::Grid) => g.layout.get_untracked().record_ids,
+                Some(g) if st().view_kind() == Some(crate::model::ViewKind::Grid) => g.layout.get_untracked().record_ids.to_vec(),
                 _ => st().with_view(|b, t, v| query::records(b, t, v).iter().map(|&i| t.records[i].id.clone()).collect()).unwrap_or_default(),
             };
             let p = ids.iter().position(|x| *x == record);

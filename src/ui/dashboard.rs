@@ -20,7 +20,7 @@ use crate::model::{Chart, ChartKind, FieldKind, Filter, Id, Measure, Value, new_
 pub fn chart_data(c: &Chart) -> Vec<(String, f64, u32)> {
     st().read(|b| {
         let Some(t) = b.table(&c.table) else { return vec![] };
-        let recs: Vec<&crate::model::Record> = t.records.iter().filter(|r| query::passes(b, t, r, &c.filter)).collect();
+        let recs: Vec<&crate::model::Record> = t.records.iter().map(|r| &**r).filter(|r| query::passes(b, t, r, &c.filter)).collect();
         let vf = c.value_field.as_ref().and_then(|f| t.field(f));
         let num = |r: &crate::model::Record| -> Option<f64> {
             vf.and_then(|f| query::cell(b, t, r, f)).and_then(|v| match v {

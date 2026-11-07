@@ -219,7 +219,7 @@ fn duplicate_field(fid: &str) {
         nf.name = t.unique_field_name(&format!("{} 副本", f.name));
         for r in &mut t.records {
             if let Some(v) = r.cells.get(fid).cloned() {
-                r.cells.insert(nf.id.clone(), v);
+                std::sync::Arc::make_mut(r).cells.insert(nf.id.clone(), v);
             }
         }
         let pos = t.fields.iter().position(|x| x.id == fid).unwrap_or(t.fields.len() - 1);
@@ -248,7 +248,9 @@ pub fn delete_field(fid: &str) {
         if let Some(t) = b.table_mut(&cur) {
             t.fields.retain(|f| f.id != fid);
             for r in &mut t.records {
-                r.cells.remove(fid);
+                if r.cells.contains_key(fid) {
+                    std::sync::Arc::make_mut(r).cells.remove(fid);
+                }
             }
             for v in &mut t.views {
                 v.field_order.retain(|f| f != fid);
@@ -368,7 +370,7 @@ pub fn duplicate_records(ids: &[Id]) {
             let mut copy = t.new_record(&me);
             copy.cells = t.records[pos].cells.clone();
             let nid = copy.id.clone();
-            t.records.insert(pos + 1, copy);
+            t.records.insert(pos + 1, std::sync::Arc::new(copy));
             for v in &mut t.views {
                 if let Some(p) = v.row_order.iter().position(|x| x == id) {
                     v.row_order.insert(p + 1, nid.clone());

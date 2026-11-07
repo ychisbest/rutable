@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub fn merge(base: &Value, local: &Value, remote: &Value) -> Result<Value, String> {
     merge_option(Some(base), Some(local), Some(remote), "document")?.ok_or("文档已删除".into())
 }
-fn merge_option(base: Option<&Value>, local: Option<&Value>, remote: Option<&Value>, path: &str) -> Result<Option<Value>, String> {
+pub fn merge_option(base: Option<&Value>, local: Option<&Value>, remote: Option<&Value>, path: &str) -> Result<Option<Value>, String> {
     if local == base {
         return Ok(remote.cloned());
     }

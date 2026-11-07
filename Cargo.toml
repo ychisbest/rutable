@@ -13,12 +13,12 @@ nsh-core = "0.3"
 nsh-base = { version = "0.3", default-features = false }
 nsh-platform-windows = { version = "0.3", default-features = false }
 async-channel = "2"
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 log = "0.4"
 rutable-model = { path = "model" }
-ureq = { version = "3", features = ["json"] }
+ureq = { version = "3", features = ["json", "gzip", "brotli"] }
 url = "2"
 
 [dependencies.windows]

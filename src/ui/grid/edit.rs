@@ -252,8 +252,8 @@ pub fn add_record(g: Grid, preset: Vec<(Id, Option<Value>)>, after: Option<(Id, 
         let id = r.id.clone();
         let pos = after.as_ref().and_then(|(a, _)| t.records.iter().position(|x| x.id == *a));
         match (pos, &after) {
-            (Some(p), Some((_, below))) => t.records.insert(if *below { p + 1 } else { p }, r),
-            _ => t.records.push(r),
+            (Some(p), Some((_, below))) => t.records.insert(if *below { p + 1 } else { p }, std::sync::Arc::new(r)),
+            _ => t.push_record(r),
         }
         // Every view with a manual order keeps it there.
         let all: Vec<Id> = t.records.iter().map(|x| x.id.clone()).collect();

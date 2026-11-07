@@ -241,7 +241,7 @@ fn on_down(g: Grid, x: f32, y: f32) {
     match hit.clone() {
         Hit::Corner => {
             let all = !l.record_ids.is_empty() && l.record_ids.iter().all(|id| s.checked.get_untracked().contains(id));
-            s.checked.set(if all { vec![] } else { l.record_ids.clone() });
+            s.checked.set(if all { vec![] } else { l.record_ids.to_vec() });
         }
         Hit::Header(c) => {
             if dbl {
@@ -547,8 +547,8 @@ fn on_up(g: Grid) {
         Drag::MoveRow { row, to, moved: true, .. } => {
             if to != row && to != row + 1 {
                 if let Some(ri) = l.record_at(row) {
-                    let order_idx: Vec<usize> = l.records.clone();
-                    let ids: Vec<String> = l.record_ids.clone();
+                    let order_idx: Vec<usize> = l.records.to_vec();
+                    let ids: Vec<String> = l.record_ids.to_vec();
                     let moving = ids[order_idx.iter().position(|x| *x == ri).unwrap()].clone();
                     // The record before which it drops.
                     let target = (to..l.rows.len()).find_map(|r| l.record_at(r)).and_then(|ti| order_idx.iter().position(|x| *x == ti)).map(|p| ids[p].clone());

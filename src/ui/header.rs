@@ -434,7 +434,7 @@ pub fn add_record_button(kind: ViewKind) {
         let t = b.table_mut(&table)?;
         let r = t.new_record(&me);
         let id = r.id.clone();
-        t.records.push(r);
+        t.push_record(r);
         crate::ui::automations::on_add(b, &table, &id);
         Some(id)
     });

@@ -53,6 +53,7 @@ pub struct St {
     pub cloud_status: Signal<String>,
     pub cloud_error: Signal<Option<String>>,
     cloud_next: Stored<i64>,
+    sync_now: Stored<bool>,
     pub loaded: Signal<bool>,
     pub uploads: Signal<usize>,
     pub server_url: Signal<String>,
@@ -110,6 +111,7 @@ impl St {
             cloud_busy: signal(false),
             cloud_error: signal(None),
             cloud_next: stored(0),
+            sync_now: stored(false),
             doc: stored(base),
             rev: signal(0),
             undo: stored(vec![]),
@@ -292,16 +294,19 @@ impl St {
         spawn(async move {
             match rx.recv().await {
                 Ok(Ok(crate::api::Outcome::Unchanged))=>{s.cloud_error.set(None);s.cloud_status.set(if s.is_dirty(){"修改尚未保存到服务器"}else{"已与服务器同步"}.into());},
-                Ok(Ok(crate::api::Outcome::Loaded(snapshot)))=>{
+                Ok(Ok(outcome@(crate::api::Outcome::Loaded(_)|crate::api::Outcome::Cached(_))))=>{
+                    let cached=matches!(outcome,crate::api::Outcome::Cached(_));
+                    let (crate::api::Outcome::Loaded(snapshot)|crate::api::Outcome::Cached(snapshot))=outcome else {unreachable!()};
                     let was_loaded=s.loaded.get_untracked();let current=s.peek(Clone::clone);
                     let merged=if was_loaded {crate::api::merge(&submitted,&current,&snapshot.document)}else{Ok(snapshot.document.clone())};
                     match merged {
                         Ok(document)=>{
-                            let dirty=serde_json::to_value(&document).unwrap()!=serde_json::to_value(&snapshot.document).unwrap();
-                            let remote_changed=serde_json::to_value(&submitted).unwrap()!=serde_json::to_value(&snapshot.document).unwrap();
+                            let dirty=!crate::model::sync::diff(&snapshot.document,&document).is_empty();
+                            let remote_changed=!crate::model::sync::diff(&submitted,&snapshot.document).is_empty();
                             s.doc.with(|b|*b=document);s.baseline.with(|b|*b=Some(snapshot));s.loaded.set(true);
                             s.saving.with(|v|*v=dirty);s.cloud_error.set(None);
-                            s.cloud_status.set(if dirty {"修改尚未保存到服务器"}else{"已保存到服务器"}.into());
+                            s.cloud_status.set(if cached {"已显示本机副本，正在与服务器同步…"} else if dirty {"修改尚未保存到服务器"}else{"已保存到服务器"}.into());
+                            if cached {s.sync_now.with(|v|*v=true);}
                             if remote_changed {s.undo.with(|u|u.clear());s.redo.with(|u|u.clear());}
                             query::invalidate();s.rev.update(|r|*r+=1);s.fix_selection();
                             if !was_loaded {s.popup.set(None);}
@@ -312,7 +317,10 @@ impl St {
                 Ok(Err(error))=>s.sync_failed(&error.to_string()),
                 Err(_)=>s.sync_failed("服务器请求中断，修改仍在内存中"),
             }
-            s.cloud_busy.set(false);s.cloud_next.with(|t|*t=crate::model::now_ms()+3000);
+            s.cloud_busy.set(false);
+            // After showing the kept copy, catch up with the server at once.
+            let soon=s.sync_now.with(|v|std::mem::take(v));
+            s.cloud_next.with(|t|*t=crate::model::now_ms()+if soon {0} else {3000});
             if s.closing.with(|v|*v) {
                 if s.cloud_error.get_untracked().is_some() {s.closing.with(|v|*v=false);s.popup.set(Some(Popup::Server));}
                 else if s.uploads.get_untracked()>0 {}
@@ -470,3 +478,4 @@ impl St {
         });
     }
 }
+

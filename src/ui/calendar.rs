@@ -215,7 +215,7 @@ fn add_on(day: i64, start_field: Option<Id>) {
             r.cells.insert(e, Value::Date(day));
         }
         let id = r.id.clone();
-        t.records.push(r);
+        t.push_record(r);
         Some(id)
     });
     if let Some(id) = id {

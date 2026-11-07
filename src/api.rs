@@ -1,4 +1,5 @@
 //! The desktop's only document storage is the authenticated server API.
+use crate::model::sync::{self, Delta, Patch};
 use crate::model::{Attachment, Base};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -72,7 +73,13 @@ impl Config {
     }
     pub fn get(&self, revision: Option<u64>) -> Result<Option<Snapshot>> {
         let agent = self.agent();
-        let mut request = agent.get(self.endpoint()).header("Authorization", self.auth());
+        // The whole document can take a while on a slow line.
+        let mut request = agent
+            .get(self.endpoint())
+            .header("Authorization", self.auth())
+            .config()
+            .timeout_global(Some(Duration::from_secs(120)))
+            .build();
         if let Some(revision) = revision {
             request = request.header("If-None-Match", format!("\"{revision}\""));
         }
@@ -81,28 +88,44 @@ impl Config {
             return Ok(None);
         }
         check(&response)?;
-        response
-            .body_mut()
-            .with_config()
-            .limit(32 * 1024 * 1024 + 1024)
-            .read_json()
+        json(&mut response)
             .map(Some)
             .map_err(|_| Error::Message("服务器文档响应无效".into()))
     }
-    pub fn put(&self, revision: u64, document: &Base) -> Result<Snapshot> {
+    /// What changed after `since`; `None` when nothing did.
+    pub fn changes(&self, since: u64) -> Result<Option<Delta>> {
         let mut response = self
             .agent()
-            .put(self.endpoint())
+            .get(format!("{}/changes?since={since}", self.endpoint()))
             .header("Authorization", self.auth())
-            .send_json(serde_json::json!({"expected_revision":revision,"document":document}))
+            .header("If-None-Match", format!("\"{since}\""))
+            .call()
             .map_err(network)?;
+        if response.status().as_u16() == 304 {
+            return Ok(None);
+        }
         check(&response)?;
-        response
-            .body_mut()
-            .with_config()
-            .limit(32 * 1024 * 1024 + 1024)
-            .read_json()
-            .map_err(|_| Error::Message("服务器保存响应无效".into()))
+        json(&mut response).map(Some).map_err(|_| Error::Message("服务器变更响应无效".into()))
+    }
+    /// Saves the changes made since `base_revision`; returns everything changed since then.
+    pub fn push(&self, base_revision: u64, patch: &Patch) -> Result<Delta> {
+        let mut response = self
+            .agent()
+            .post(format!("{}/changes", self.endpoint()))
+            .header("Authorization", self.auth())
+            .send_json(serde_json::json!({"base_revision":base_revision,"patch":patch}))
+            .map_err(network)?;
+        if response.status().as_u16() == 409 {
+            let body: serde_json::Value = response.body_mut().read_json().unwrap_or_default();
+            let reason = body["error"].as_str().unwrap_or("");
+            return Err(if reason.starts_with("revision") || reason.is_empty() {
+                Error::Conflict
+            } else {
+                Error::Message(format!("{reason}；修改仍在内存中，请处理后重试或重新读取服务器"))
+            });
+        }
+        check(&response)?;
+        json(&mut response).map_err(|_| Error::Message("服务器保存响应无效".into()))
     }
     pub fn upload(&self, path: &std::path::Path) -> Result<Attachment> {
         let metadata = std::fs::metadata(path).map_err(|_| Error::Message("无法读取所选文件".into()))?;
@@ -146,6 +169,12 @@ impl Config {
         Ok(format!("{}{path}", self.url))
     }
 }
+/// Reads the whole body, then parses it: parsing straight from the
+/// (decompressing) stream goes byte by byte and is many times slower.
+fn json<T: serde::de::DeserializeOwned>(response: &mut ureq::http::Response<ureq::Body>) -> std::result::Result<T, ()> {
+    let bytes = response.body_mut().with_config().limit(64 * 1024 * 1024).read_to_vec().map_err(|_| ())?;
+    serde_json::from_slice(&bytes).map_err(|_| ())
+}
 fn network(_: ureq::Error) -> Error {
     Error::Message("无法连接服务器，未保存的修改仍在当前窗口内存中".into())
 }
@@ -160,35 +189,122 @@ fn check(response: &ureq::http::Response<ureq::Body>) -> Result<()> {
         _ => Err(Error::Message(format!("服务器请求失败（HTTP {code}），修改尚未保存"))),
     }
 }
+/// Three-way merge, item by item: `local`'s changes since `base` applied onto `remote`.
 pub fn merge(base: &Base, local: &Base, remote: &Base) -> Result<Base> {
-    let value = rutable_model::merge::merge(
-        &serde_json::to_value(base).unwrap(),
-        &serde_json::to_value(local).unwrap(),
-        &serde_json::to_value(remote).unwrap(),
-    )
-    .map_err(|e| Error::Message(format!("{e}；修改仍在内存中，请处理后重试或重新读取服务器")))?;
-    serde_json::from_value(value).map_err(|_| Error::Message("合并后的文档无效".into()))
+    sync::merge(base, local, remote).map_err(|e| Error::Message(format!("{e}；修改仍在内存中，请处理后重试或重新读取服务器")))
 }
 pub enum Outcome {
     Unchanged,
     Loaded(Snapshot),
+    /// The last copy this computer kept; a sync with the server follows at once.
+    Cached(Snapshot),
 }
+/// The whole document from the server, kept for the next start.
+fn full(config: &Config) -> Result<Snapshot> {
+    let snapshot = config.get(None)?.ok_or_else(|| Error::Message("服务器没有返回文档".into()))?;
+    cache::write(config, &snapshot, true);
+    Ok(snapshot)
+}
+/// One round with the server. The first round shows the copy kept on this
+/// computer (or downloads the whole document); later rounds move only the
+/// records and settings that changed, in either direction.
 pub fn sync(config: &Config, baseline: Option<&Snapshot>, local: &Base, dirty: bool) -> Result<Outcome> {
-    if !dirty {
-        return config.get(baseline.map(|s| s.revision)).map(|s| s.map(Outcome::Loaded).unwrap_or(Outcome::Unchanged));
-    }
-    let baseline = baseline.ok_or_else(|| Error::Message("尚未读取服务器文档".into()))?;
-    for _ in 0..3 {
-        let remote = config.get(None)?.ok_or_else(|| Error::Message("服务器没有返回文档".into()))?;
-        let merged = merge(&baseline.document, local, &remote.document)?;
-        if serde_json::to_value(&merged).unwrap() == serde_json::to_value(&remote.document).unwrap() {
-            return Ok(Outcome::Loaded(remote));
+    let Some(baseline) = baseline else {
+        if let Some(cached) = cache::read(config) {
+            return Ok(Outcome::Cached(cached));
         }
-        match config.put(remote.revision, &merged) {
-            Ok(snapshot) => return Ok(Outcome::Loaded(snapshot)),
-            Err(Error::Conflict) => continue,
+        return full(config).map(Outcome::Loaded);
+    };
+    let patch = if dirty { sync::diff(&baseline.document, local) } else { Patch::default() };
+    let delta = if patch.is_empty() {
+        match config.changes(baseline.revision) {
+            // Marked unsaved, yet nothing differs from the server (an edit
+            // undone, a value set to what it was): answer with the server's
+            // version, so the window sees it is saved — and can close.
+            Ok(None) if dirty => return Ok(Outcome::Loaded(baseline.clone())),
+            Ok(None) => return Ok(Outcome::Unchanged),
+            Ok(Some(d)) => d,
+            // The kept copy is newer than the server (restored from a backup): start over.
+            Err(Error::Conflict) => return full(config).map(Outcome::Loaded),
+            Err(Error::NotFound) => {
+                cache::remove(config);
+                return Err(Error::NotFound);
+            }
             Err(e) => return Err(e),
         }
+    } else {
+        config.push(baseline.revision, &patch)?
+    };
+    let mut document = baseline.document.clone();
+    match sync::apply_delta(&mut document, &delta) {
+        Ok(()) => {
+            let snapshot = Snapshot { revision: delta.revision, document };
+            cache::write(config, &snapshot, false);
+            Ok(Outcome::Loaded(snapshot))
+        }
+        // Out of step: start over from the whole document.
+        Err(_) => full(config).map(Outcome::Loaded),
     }
-    Err(Error::Conflict)
+}
+
+/// The last server version of a document, kept on this computer so a start
+/// shows it at once and downloads only what changed since. It only ever
+/// holds what the server confirmed: unsaved edits stay in memory.
+pub mod cache {
+    use super::{Config, Snapshot};
+    use std::{collections::HashMap, path::PathBuf, sync::Mutex, time::Instant};
+
+    static WRITTEN: Mutex<Option<HashMap<PathBuf, Instant>>> = Mutex::new(None);
+
+    pub fn enabled() -> bool {
+        !std::env::args().any(|a| a == "--no-cache")
+    }
+
+    fn path(config: &Config) -> Option<PathBuf> {
+        if !enabled() {
+            return None;
+        }
+        let dir = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?.join("Rutable").join("cache");
+        // FNV-1a of the server and document: one file per document per server.
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in config.url.bytes().chain([0]).chain(config.document.bytes()) {
+            h = (h ^ b as u64).wrapping_mul(0x100000001b3);
+        }
+        Some(dir.join(format!("{}-{h:016x}.json", config.document)))
+    }
+
+    pub fn read(config: &Config) -> Option<Snapshot> {
+        let bytes = std::fs::read(path(config)?).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    /// Saves `snapshot`; unless `now`, at most every 30 seconds (a stale copy
+    /// only means a bigger first sync).
+    pub fn write(config: &Config, snapshot: &Snapshot, now: bool) {
+        let Some(path) = path(config) else { return };
+        {
+            let mut written = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
+            let written = written.get_or_insert_with(HashMap::new);
+            if !now && written.get(&path).is_some_and(|t| t.elapsed().as_secs() < 30) {
+                return;
+            }
+            written.insert(path.clone(), Instant::now());
+        }
+        let Ok(body) = serde_json::to_vec(snapshot) else { return };
+        let Some(dir) = path.parent() else { return };
+        if std::fs::create_dir_all(dir).is_err() {
+            return;
+        }
+        // Written aside, then moved over: a crash never leaves half a file.
+        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+        if std::fs::write(&tmp, body).is_ok() && std::fs::rename(&tmp, &path).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+
+    pub fn remove(config: &Config) {
+        if let Some(p) = path(config) {
+            let _ = std::fs::remove_file(p);
+        }
+    }
 }

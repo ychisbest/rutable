@@ -799,6 +799,7 @@ fn update_field(table: &str, fid: &str, name: String, kind: FieldKind, desc: Str
             let mut nk = kind.clone();
             for r in &mut t.records {
                 if let Some(v) = r.cells.get(fid).cloned() {
+                    let r = std::sync::Arc::make_mut(r);
                     match value::convert(&snapshot, tsnap, &old.kind, &mut nk, &v) {
                         Some(nv) => {
                             r.cells.insert(fid.to_string(), nv);
@@ -812,13 +813,20 @@ fn update_field(table: &str, fid: &str, name: String, kind: FieldKind, desc: Str
             kind = nk;
         } else if kind.is_computed() {
             for r in &mut t.records {
-                r.cells.remove(fid);
+                if r.cells.contains_key(fid) {
+                    std::sync::Arc::make_mut(r).cells.remove(fid);
+                }
             }
         }
         // Options removed from a select leave the cells.
         if let Some(opts) = kind.options() {
             let ids: Vec<Id> = opts.iter().map(|o| o.id.clone()).collect();
             for r in &mut t.records {
+                let stale = matches!(r.cells.get(fid), Some(crate::model::Value::Options(v)) if v.iter().any(|x| !ids.contains(x)) || v.is_empty());
+                if !stale {
+                    continue;
+                }
+                let r = std::sync::Arc::make_mut(r);
                 if let Some(crate::model::Value::Options(v)) = r.cells.get_mut(fid) {
                     v.retain(|x| ids.contains(x));
                     if v.is_empty() {

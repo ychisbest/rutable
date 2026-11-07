@@ -55,7 +55,7 @@ pub fn form_view() -> impl IntoElement {
                 r.cells.insert(f, v);
             }
             let id = r.id.clone();
-            t.records.push(r);
+            t.push_record(r);
             crate::ui::automations::on_add(b, &table, &id);
         });
         draft.with(|d| d.clear());

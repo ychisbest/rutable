@@ -4,9 +4,11 @@
 pub mod formula;
 pub mod query;
 pub mod sample;
+pub mod sync;
 pub mod value;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -975,7 +977,9 @@ pub struct Table {
     pub id: Id,
     pub name: String,
     pub fields: Vec<Field>,
-    pub records: Vec<Record>,
+    /// Shared copy-on-write: cloning the document (undo, sync) copies
+    /// pointers; an edit copies only the records it changes.
+    pub records: Vec<Arc<Record>>,
     pub views: Vec<View>,
     #[serde(default)]
     pub seq: u64,
@@ -996,10 +1000,18 @@ impl Table {
         self.fields.iter().find(|f| f.name == name)
     }
     pub fn record(&self, id: &str) -> Option<&Record> {
-        self.records.iter().find(|r| r.id == id)
+        self.records.iter().find(|r| r.id == id).map(|r| &**r)
     }
     pub fn record_mut(&mut self, id: &str) -> Option<&mut Record> {
-        self.records.iter_mut().find(|r| r.id == id)
+        self.records.iter_mut().find(|r| r.id == id).map(Arc::make_mut)
+    }
+    /// Every record, for an edit that may change any of them: each one
+    /// is copied off the shared versions (undo, sync baseline) first.
+    pub fn records_mut(&mut self) -> impl Iterator<Item = &mut Record> {
+        self.records.iter_mut().map(Arc::make_mut)
+    }
+    pub fn push_record(&mut self, r: Record) {
+        self.records.push(Arc::new(r));
     }
     pub fn view(&self, id: &str) -> Option<&View> {
         self.views.iter().find(|v| v.id == id)
@@ -1275,7 +1287,7 @@ impl Base {
         let me = self.me.clone();
         for _ in 0..5 {
             let r = t.new_record(&me);
-            t.records.push(r);
+            t.push_record(r);
         }
         let id = t.id.clone();
         self.tables.push(t);
@@ -1336,6 +1348,14 @@ impl Base {
                 })
                 .collect();
             for r in &mut t.records {
+                let stale = links.iter().any(|(fid, other)| match (r.cells.get(fid), ids.get(other)) {
+                    (Some(Value::Links(l)), Some(set)) => l.iter().any(|x| !set.contains(x)),
+                    _ => false,
+                });
+                if !stale {
+                    continue;
+                }
+                let r = Arc::make_mut(r);
                 for (fid, other) in &links {
                     if let Some(Value::Links(l)) = r.cells.get_mut(fid) {
                         if let Some(set) = ids.get(other) {
@@ -1363,6 +1383,7 @@ impl Base {
             if was == is {
                 continue;
             }
+            let r = Arc::make_mut(r);
             let cell = r.cells.entry(pair.clone()).or_insert_with(|| Value::Links(vec![]));
             if let Value::Links(l) = cell {
                 if is && !l.iter().any(|x| x == record) {
