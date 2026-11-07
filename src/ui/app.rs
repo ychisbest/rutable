@@ -5,7 +5,7 @@ use nsh_core::prelude::*;
 
 use super::{
     automation, dashboard, form, gallery, gantt, grid, header, kanban, calendar, popups, record, sidebar,
-    state::{St, st},
+    state::{Screen, St, st},
     theme::*,
 };
 use crate::{model::ViewKind, win};
@@ -13,8 +13,7 @@ use crate::{model::ViewKind, win};
 #[component]
 pub fn RutableApp() -> impl IntoElement {
     let s = St::init();
-    s.popup.set(Some(super::state::Popup::Server));
-    if s.server.with(|c|c.is_some()) {s.start_cloud_sync();}
+    s.listen_remote();
 
     // Commands from the window thread (keys, wheel) and the automation port.
     spawn(async move {
@@ -52,52 +51,24 @@ pub fn RutableApp() -> impl IntoElement {
     on_key("mod+f", move |_| st().search_open.set(true));
     on_key("mod+/", move |_| st().popup.set(Some(super::state::Popup::Shortcuts)));
 
-    // What the main area shows changes only with these.
-    let is_dash = computed(move || {
-        let cur = s.cur.get();
-        s.read(|b| b.dashboard(&cur).is_some())
-    });
-    let view_kind = computed(move || s.view_kind());
-
-    // The window's title follows the base's name.
+    // The window's title follows the open base's name.
     effect(move || {
         let name = s.read(|b| b.name.clone());
-        win::set_title(&format!("Rutable - {name}"));
+        if s.screen.get() == Screen::Base {
+            win::set_title(&format!("Rutable - {name}"));
+        }
     });
 
+    let screen = computed(move || s.screen.get());
     view()
         .flex_1()
         .bg(rgb(BG))
         .on_layout(move |b: &Bounds<Points>| s.window.set((b.size.width.0, b.size.height.0)))
-        .child(header::top_bar())
-        .child(
-            view()
-                .flex_1()
-                .flex_row()
-                .child(when(move || s.sidebar.get(), sidebar::sidebar))
-                .child(view().flex_1().min_w(px(0.0)).child(dynamic(move || {
-                    let cur = s.cur.get();
-                    if is_dash.get() {
-                        return dashboard::dashboard(cur).into_element();
-                    }
-                    view()
-                        .flex_1()
-                        .child(header::view_tabs())
-                        .child(dynamic(move || {
-                            let _ = s.view.get();
-                            match view_kind.get() {
-                                Some(ViewKind::Grid) => vec![header::toolbar(ViewKind::Grid).into_element(), grid::grid_view().into_element()],
-                                Some(ViewKind::Kanban) => vec![header::toolbar(ViewKind::Kanban).into_element(), kanban::kanban().into_element()],
-                                Some(ViewKind::Gallery) => vec![header::toolbar(ViewKind::Gallery).into_element(), gallery::gallery().into_element()],
-                                Some(ViewKind::Gantt) => vec![header::toolbar(ViewKind::Gantt).into_element(), gantt::gantt().into_element()],
-                                Some(ViewKind::Calendar) => vec![header::toolbar(ViewKind::Calendar).into_element(), calendar::calendar_view().into_element()],
-                                Some(ViewKind::Form) => vec![form::form_view().into_element()],
-                                None => vec![view().into_element()],
-                            }
-                        }))
-                        .into_element()
-                }))),
-        )
+        .child(dynamic(move || match screen.get() {
+            Screen::Login => super::login::login().into_element(),
+            Screen::Home => super::home::home().into_element(),
+            Screen::Base => base_screen().into_element(),
+        }))
         .child(dynamic(popups::popup))
         .child(dynamic(record::record_card))
         .child(dynamic(move || {
@@ -124,5 +95,56 @@ pub fn RutableApp() -> impl IntoElement {
                             .child(text(msg).text_size(px(14.0)).text_color(rgb(TEXT))),
                     )
             })
+        }))
+}
+
+/// Inside a base: top bar, sidebar, and the open table's view or dashboard.
+fn base_screen() -> impl IntoElement {
+    let s = st();
+    let is_dash = computed(move || {
+        let cur = s.cur.get();
+        s.read(|b| b.dashboard(&cur).is_some())
+    });
+    let view_kind = computed(move || s.view_kind());
+    let loaded = computed(move || s.loaded.get());
+    view()
+        .flex_1()
+        .child(header::top_bar())
+        .child(when(move || !loaded.get(), move || {
+            view()
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .gap(px(8.0))
+                .child(text("正在打开…").text_size(px(15.0)).text_color(rgb(TEXT2)))
+                .child(text(move || s.cloud_error.get().unwrap_or_default()).text_size(px(13.0)).text_color(rgb(DANGER)))
+        }))
+        .child(when(move || loaded.get(), move || {
+            view()
+                .flex_1()
+                .flex_row()
+                .child(when(move || s.sidebar.get(), sidebar::sidebar))
+                .child(view().flex_1().min_w(px(0.0)).child(dynamic(move || {
+                    let cur = s.cur.get();
+                    if is_dash.get() {
+                        return dashboard::dashboard(cur).into_element();
+                    }
+                    view()
+                        .flex_1()
+                        .child(header::view_tabs())
+                        .child(dynamic(move || {
+                            let _ = s.view.get();
+                            match view_kind.get() {
+                                Some(ViewKind::Grid) => vec![header::toolbar(ViewKind::Grid).into_element(), grid::grid_view().into_element()],
+                                Some(ViewKind::Kanban) => vec![header::toolbar(ViewKind::Kanban).into_element(), kanban::kanban().into_element()],
+                                Some(ViewKind::Gallery) => vec![header::toolbar(ViewKind::Gallery).into_element(), gallery::gallery().into_element()],
+                                Some(ViewKind::Gantt) => vec![header::toolbar(ViewKind::Gantt).into_element(), gantt::gantt().into_element()],
+                                Some(ViewKind::Calendar) => vec![header::toolbar(ViewKind::Calendar).into_element(), calendar::calendar_view().into_element()],
+                                Some(ViewKind::Form) => vec![form::form_view().into_element()],
+                                None => vec![view().into_element()],
+                            }
+                        }))
+                        .into_element()
+                })))
         }))
 }

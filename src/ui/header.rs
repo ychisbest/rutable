@@ -45,16 +45,12 @@ pub fn top_bar() -> impl IntoElement {
         .border_b(px(1.0))
         .border_color(rgb(BORDER))
         .bg(rgb(BG))
+        .child(icon_button("home", || true, move || st().go_home()))
         .child(icon_button("sidebar", || true, move || s.sidebar.update(|o| *o = !*o)))
-        .child(
-            view()
-                .size(px(28.0))
-                .rounded(px(6.0))
-                .bg(rgb(PRIMARY))
-                .items_center()
-                .justify_center()
-                .child(icons::icon("table", 16.0, 0xFFFFFF)),
-        )
+        .child(dynamic(move || {
+            let icon = s.read(|b| b.icon.clone());
+            super::home::base_icon(&icon, 28.0)
+        }))
         .child(dynamic(move || {
             if editing.get() {
                 nsh_core::element::input()
@@ -102,44 +98,7 @@ pub fn top_bar() -> impl IntoElement {
         )
         .child(icon_button("undo", move || s.can_undo(), move || st().undo()))
         .child(icon_button("redo", move || s.can_redo(), move || st().redo()))
-        .child(
-            view()
-                .child(icon_button("bell", || true, move || {
-                    let n = st().notices.get_untracked();
-                    if n.is_empty() {
-                        st().toast("暂无通知");
-                    } else {
-                        st().toast(&n[0]);
-                    }
-                }))
-                .child(when(move || !s.notices.get().is_empty(), move || {
-                    view()
-                        .absolute()
-                        .top(px(2.0))
-                        .right(px(2.0))
-                        .min_w(px(16.0))
-                        .h(px(16.0))
-                        .px(px(4.0))
-                        .rounded(px(8.0))
-                        .bg(rgb(DANGER))
-                        .items_center()
-                        .justify_center()
-                        .pointer_events(PointerEvents::None)
-                        .child(text(move || s.notices.get().len().to_string()).text_size(px(10.0)).text_color(rgb(0xFFFFFF)))
-                })),
-        )
-        .child(widgets::button("服务器", move || st().popup.set(Some(Popup::Server))))
-        .child(widgets::primary_button("分享", move || st().popup.set(Some(Popup::Share))))
-        .child({
-            let at = element_ref();
-            view()
-                .element_ref(&at)
-                .on_press(move || widgets::below(at, move |x, y| st().popup.set(Some(Popup::Identity { x, y }))))
-                .child(dynamic(move || {
-                    let (name, color) = s.read(|b| b.member(&b.me).map(|m| (m.name.clone(), m.color)).unwrap_or(("我".into(), 0)));
-                    widgets::avatar_el(&name, color, 30.0)
-                }))
-        })
+        .child(widgets::button("复制给 AI", super::home::copy_for_ai))
 }
 
 pub fn view_tabs() -> impl IntoElement {

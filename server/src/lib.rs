@@ -18,15 +18,27 @@ use std::{
 };
 use tower_http::{compression::CompressionLayer, decompression::RequestDecompressionLayer};
 
+mod auth;
+mod mcp;
+mod web;
+mod workspace;
+
 #[derive(Clone)]
 pub struct App {
     db: Arc<Mutex<Store>>,
+    /// The server key (RUTABLE_API_TOKEN): always accepted, and needed once to set the password.
     token: Arc<String>,
+    /// Bumps on every saved change of any document (for waiting clients).
+    changed: Arc<tokio::sync::watch::Sender<u64>>,
+    logins: Arc<Mutex<auth::Limiter>>,
+    /// Where the downloadable client lives (RUTABLE_DIST).
+    dist: Option<Arc<std::path::PathBuf>>,
 }
 /// SQLite plus the documents in memory, so a save touches only its items.
 pub struct Store {
     pub conn: Connection,
     cache: HashMap<String, (u64, Base)>,
+    changed: Arc<tokio::sync::watch::Sender<u64>>,
 }
 #[derive(Debug)]
 pub struct Error(pub StatusCode, pub String);
@@ -45,7 +57,7 @@ impl From<serde_json::Error> for Error {
         Self(StatusCode::BAD_REQUEST, "文档格式错误".into())
     }
 }
-type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub revision: u64,
@@ -79,7 +91,7 @@ struct Link {
 struct Since {
     since: u64,
 }
-fn error(status: StatusCode, message: impl Into<String>) -> Error {
+pub(crate) fn error(status: StatusCode, message: impl Into<String>) -> Error {
     Error(status, message.into())
 }
 const SCHEMA: &str = "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
@@ -90,7 +102,10 @@ const SCHEMA: &str = "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA f
   CREATE TABLE IF NOT EXISTS doc_records(document_id TEXT NOT NULL, table_id TEXT NOT NULL, id TEXT NOT NULL, pos INTEGER NOT NULL, rev INTEGER NOT NULL, body TEXT, PRIMARY KEY(document_id,table_id,id));
   CREATE INDEX IF NOT EXISTS doc_records_rev ON doc_records(document_id,rev);
   CREATE TABLE IF NOT EXISTS doc_orders(document_id TEXT NOT NULL, table_id TEXT NOT NULL, rev INTEGER NOT NULL, PRIMARY KEY(document_id,table_id));
-  CREATE TABLE IF NOT EXISTS doc_log(document_id TEXT NOT NULL, revision INTEGER NOT NULL, patch TEXT NOT NULL, saved_at INTEGER NOT NULL, PRIMARY KEY(document_id,revision));";
+  CREATE TABLE IF NOT EXISTS doc_log(document_id TEXT NOT NULL, revision INTEGER NOT NULL, patch TEXT NOT NULL, saved_at INTEGER NOT NULL, PRIMARY KEY(document_id,revision));
+  CREATE TABLE IF NOT EXISTS workspace(id TEXT PRIMARY KEY, pos INTEGER NOT NULL, created_at INTEGER NOT NULL, deleted_at INTEGER);
+  CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS credentials(id TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL, last_used INTEGER NOT NULL, expires_at INTEGER);";
 impl App {
     pub fn open(path: impl AsRef<std::path::Path>, token: String) -> Result<Self> {
         let db = Connection::open(path)?;
@@ -102,9 +117,12 @@ impl App {
         }
         db.busy_timeout(Duration::from_secs(5))?;
         db.execute_batch(SCHEMA)?;
-        let mut store = Store { conn: db, cache: HashMap::new() };
+        let changed = Arc::new(tokio::sync::watch::channel(0u64).0);
+        let mut store = Store { conn: db, cache: HashMap::new(), changed: changed.clone() };
         migrate(&mut store)?;
-        Ok(Self { db: Arc::new(Mutex::new(store)), token: Arc::new(token) })
+        workspace::adopt(&store.conn)?;
+        let dist = std::env::var_os("RUTABLE_DIST").map(|d| Arc::new(std::path::PathBuf::from(d)));
+        Ok(Self { db: Arc::new(Mutex::new(store)), token: Arc::new(token), changed, logins: Arc::new(Mutex::new(auth::Limiter::default())), dist })
     }
     pub fn import(&self, id: &str, document: Base) -> Result<()> {
         valid_id(id)?;
@@ -124,6 +142,7 @@ impl App {
         let tx = store.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         check_attachments(&tx, id, files)?;
         insert_full(&tx, id, 1, &document)?;
+        workspace::add(&tx, id)?;
         tx.commit()?;
         store.cache.insert(id.into(), (1, document));
         Ok(())
@@ -155,7 +174,7 @@ fn migrate(store: &mut Store) -> Result<()> {
     tx.commit()?;
     Ok(())
 }
-fn insert_full(tx: &Connection, id: &str, rev: u64, doc: &Base) -> Result<()> {
+pub(crate) fn insert_full(tx: &Connection, id: &str, rev: u64, doc: &Base) -> Result<()> {
     let now = rutable_model::now_ms();
     tx.execute(
         "INSERT INTO doc_meta(id,revision,meta,meta_rev,updated_at) VALUES (?1,?2,?3,?2,?4)",
@@ -169,12 +188,19 @@ fn insert_full(tx: &Connection, id: &str, rev: u64, doc: &Base) -> Result<()> {
     }
     Ok(())
 }
-fn revision(conn: &Connection, id: &str) -> Result<Option<u64>> {
-    Ok(conn.query_row("SELECT revision FROM doc_meta WHERE id=?1", [id], |r| r.get::<_, i64>(0).map(|v| v as u64)).optional()?)
+/// The document's revision; `None` if it does not exist or is in the trash.
+pub(crate) fn revision(conn: &Connection, id: &str) -> Result<Option<u64>> {
+    Ok(conn
+        .query_row(
+            "SELECT m.revision FROM doc_meta m LEFT JOIN workspace w ON w.id=m.id WHERE m.id=?1 AND w.deleted_at IS NULL",
+            [id],
+            |r| r.get::<_, i64>(0).map(|v| v as u64),
+        )
+        .optional()?)
 }
 impl Store {
     /// The document at its current revision.
-    fn load(&mut self, id: &str) -> Result<&mut (u64, Base)> {
+    pub(crate) fn load(&mut self, id: &str) -> Result<&mut (u64, Base)> {
         let rev = revision(&self.conn, id)?.ok_or_else(|| error(StatusCode::NOT_FOUND, "document_not_found"))?;
         if self.cache.get(id).is_none_or(|c| c.0 != rev) {
             let meta: String = self.conn.query_row("SELECT meta FROM doc_meta WHERE id=?1", [id], |r| r.get(0))?;
@@ -193,7 +219,7 @@ impl Store {
         }
         Ok(self.cache.get_mut(id).unwrap())
     }
-    fn snapshot(&mut self, id: &str) -> Result<Snapshot> {
+    pub(crate) fn snapshot(&mut self, id: &str) -> Result<Snapshot> {
         let (revision, document) = self.load(id)?.clone();
         Ok(Snapshot { revision, document })
     }
@@ -228,7 +254,7 @@ impl Store {
     }
     /// Applies `patch` (made against `base_revision`, merged item by item
     /// with what changed since) and stores only the items it changed.
-    fn commit(&mut self, id: &str, patch: &Patch) -> Result<u64> {
+    pub(crate) fn commit(&mut self, id: &str, patch: &Patch) -> Result<u64> {
         let (current, doc) = self.load(id)?.clone();
         let mut next = doc;
         let touched = sync::apply(&mut next, patch).map_err(|e| error(StatusCode::CONFLICT, e))?;
@@ -301,10 +327,11 @@ impl Store {
         tx.execute("DELETE FROM doc_log WHERE document_id=?1 AND revision<=?2", params![id, rev.saturating_sub(100) as i64])?;
         tx.commit()?;
         self.cache.insert(id.into(), (rev, next));
+        self.changed.send_modify(|n| *n += 1);
         Ok(rev)
     }
 }
-fn check_attachments(tx: &Connection, id: &str, files: Vec<String>) -> Result<()> {
+pub(crate) fn check_attachments(tx: &Connection, id: &str, files: Vec<String>) -> Result<()> {
     for file in files {
         if tx.query_row("SELECT 1 FROM attachments WHERE id=?1 AND document_id=?2", params![file, id], |r| r.get::<_, i64>(0)).optional()?.is_none() {
             return Err(error(StatusCode::BAD_REQUEST, "引用的服务器附件不存在"));
@@ -312,13 +339,13 @@ fn check_attachments(tx: &Connection, id: &str, files: Vec<String>) -> Result<()
     }
     Ok(())
 }
-fn valid_id(id: &str) -> Result<()> {
+pub(crate) fn valid_id(id: &str) -> Result<()> {
     if id.is_empty() || id.len() > 80 || !id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')) {
         return Err(error(StatusCode::BAD_REQUEST, "文档 ID 无效"));
     }
     Ok(())
 }
-fn validate(b: &Base) -> Result<()> {
+pub(crate) fn validate(b: &Base) -> Result<()> {
     if b.tables.is_empty() {
         return Err(error(StatusCode::BAD_REQUEST, "文档至少需要一个数据表"));
     }
@@ -348,7 +375,7 @@ fn validate(b: &Base) -> Result<()> {
     }
     Ok(())
 }
-fn attachment_ids(v: &Value, ids: &mut Vec<String>) -> Result<()> {
+pub(crate) fn attachment_ids(v: &Value, ids: &mut Vec<String>) -> Result<()> {
     match v {
         Value::Files(files) => {
             for file in files {
@@ -369,7 +396,7 @@ fn attachment_ids(v: &Value, ids: &mut Vec<String>) -> Result<()> {
     }
     Ok(())
 }
-async fn db<T: Send + 'static>(state: App, job: impl FnOnce(&mut Store) -> Result<T> + Send + 'static) -> Result<T> {
+pub(crate) async fn db<T: Send + 'static>(state: App, job: impl FnOnce(&mut Store) -> Result<T> + Send + 'static) -> Result<T> {
     tokio::task::spawn_blocking(move || {
         let mut store = state.db.lock().map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "数据库锁异常"))?;
         job(&mut store)
@@ -377,28 +404,34 @@ async fn db<T: Send + 'static>(state: App, job: impl FnOnce(&mut Store) -> Resul
     .await
     .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "数据库线程中断"))?
 }
-async fn auth(State(state): State<App>, request: axum::extract::Request, next: Next) -> Response {
-    let provided =
-        request.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).unwrap_or("");
-    let expected = state.token.as_bytes();
-    let actual = provided.as_bytes();
-    let matches = actual.len() == expected.len() && actual.iter().zip(expected).fold(0u8, |diff, (a, b)| diff | (a ^ b)) == 0;
-    if !matches {
-        return error(StatusCode::UNAUTHORIZED, "unauthorized").into_response();
-    }
-    next.run(request).await
-}
 pub fn router(state: App) -> Router {
     let api = Router::new()
-        .route("/documents/{id}", get(read_document).put(save_document))
+        .route("/documents", get(workspace::list).post(workspace::create))
+        .route("/trash", get(workspace::trash))
+        .route("/workspace/order", axum::routing::put(workspace::reorder))
+        .route("/documents/{id}", get(read_document).put(save_document).patch(workspace::rename).delete(workspace::remove))
+        .route("/documents/{id}/restore", post(workspace::restore))
+        .route("/documents/{id}/wait", get(workspace::wait))
         .route("/documents/{id}/changes", get(read_changes).post(save_changes))
+        .route("/auth/tokens", get(auth::list_tokens).post(auth::create_token))
+        .route("/auth/tokens/{token}", axum::routing::delete(auth::delete_token))
+        .route("/auth/password", post(auth::change_password))
+        .route("/auth/logout", post(auth::logout))
         .route("/documents/{id}/attachments", post(upload))
         .route("/documents/{id}/attachments/{file}", get(download))
         .route("/documents/{id}/attachments/{file}/link", post(create_link))
-        .layer(middleware::from_fn_with_state(state.clone(), auth));
+        .layer(middleware::from_fn_with_state(state.clone(), auth::require));
+    let public = Router::new()
+        .route("/auth/status", get(auth::status))
+        .route("/auth/setup", post(auth::setup))
+        .route("/auth/login", post(auth::login));
+    let mcp = Router::new().route("/mcp", post(mcp::handle).get(mcp::not_streaming)).layer(middleware::from_fn_with_state(state.clone(), auth::require));
     Router::new()
         .route("/healthz", get(|| async { Json(serde_json::json!({"status":"ok","storage":"sqlite"})) }))
-        .nest("/api/v1", api)
+        .route("/", get(web::home))
+        .route("/download/rutable.exe", get(web::download))
+        .nest("/api/v1", api.merge(public))
+        .merge(mcp)
         .route("/attachments/{file}/view", get(view_attachment))
         .route("/attachments/{file}/content", get(linked_content))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
@@ -452,6 +485,7 @@ async fn save_document(State(state): State<App>, Path(id): Path<String>, Json(re
             let tx = store.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             check_attachments(&tx, &id, files)?;
             insert_full(&tx, &id, 1, &request.document)?;
+            workspace::add(&tx, &id)?;
             tx.commit()?;
             return store.snapshot(&id);
         };
@@ -557,7 +591,7 @@ async fn create_link(State(state): State<App>, Path((id, file)): Path<(String, S
     })
     .await
 }
-fn escape(s: &str) -> String {
+pub(crate) fn escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
 }
 fn linked(db: &Connection, file: &str, token: &str) -> Result<(String, String, Vec<u8>)> {
@@ -804,5 +838,164 @@ mod tests {
         let snap = store.snapshot("default").unwrap();
         assert_eq!(snap.revision, 42);
         assert!(sync::diff(&base, &snap.document).is_empty());
+    }
+
+    fn plain(method: &str, path: &str, bearer: Option<&str>, body: serde_json::Value) -> Request<Body> {
+        let mut b = Request::builder().method(method).uri(path).header(header::CONTENT_TYPE, "application/json");
+        if let Some(t) = bearer {
+            b = b.header(header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        b.body(Body::from(body.to_string())).unwrap()
+    }
+    async fn send(api: &Router, req: Request<Body>) -> (StatusCode, serde_json::Value) {
+        let r = api.clone().oneshot(req).await.unwrap();
+        let st = r.status();
+        let bytes = to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        (st, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+    #[tokio::test]
+    async fn password_setup_needs_the_server_key_then_logins_get_their_own_credential() {
+        let state = app();
+        state.import("default", records(1)).unwrap();
+        let api = router(state);
+        let (_, st) = send(&api, plain("GET", "/api/v1/auth/status", None, serde_json::Value::Null)).await;
+        assert_eq!(st["password_set"], false);
+        // A stranger without the server key cannot claim the server.
+        let (code, _) = send(&api, plain("POST", "/api/v1/auth/setup", None, serde_json::json!({"setup_key":"guess","password":"hunter2hunter2"}))).await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+        let (code, b) = send(&api, plain("POST", "/api/v1/auth/setup", None, serde_json::json!({"setup_key":TOKEN,"password":"hunter2hunter2"}))).await;
+        assert_eq!(code, StatusCode::OK);
+        let session = b["token"].as_str().unwrap().to_string();
+        assert_eq!(send(&api, plain("POST", "/api/v1/auth/setup", None, serde_json::json!({"setup_key":TOKEN,"password":"another-one"}))).await.0, StatusCode::CONFLICT);
+        assert_eq!(send(&api, plain("GET", "/api/v1/documents", Some(&session), serde_json::Value::Null)).await.0, StatusCode::OK);
+        assert_eq!(send(&api, plain("GET", "/api/v1/documents", Some("rts_forged"), serde_json::Value::Null)).await.0, StatusCode::UNAUTHORIZED);
+        let (code, b) = send(&api, plain("POST", "/api/v1/auth/login", None, serde_json::json!({"password":"hunter2hunter2"}))).await;
+        assert_eq!(code, StatusCode::OK);
+        let second = b["token"].as_str().unwrap().to_string();
+        // Wrong passwords lock logins for a while.
+        for _ in 0..5 {
+            assert_eq!(send(&api, plain("POST", "/api/v1/auth/login", None, serde_json::json!({"password":"wrong"}))).await.0, StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(send(&api, plain("POST", "/api/v1/auth/login", None, serde_json::json!({"password":"hunter2hunter2"}))).await.0, StatusCode::TOO_MANY_REQUESTS);
+        // Logging out ends that credential only.
+        assert_eq!(send(&api, plain("POST", "/api/v1/auth/logout", Some(&second), serde_json::Value::Null)).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(send(&api, plain("GET", "/api/v1/documents", Some(&second), serde_json::Value::Null)).await.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(send(&api, plain("GET", "/api/v1/documents", Some(&session), serde_json::Value::Null)).await.0, StatusCode::OK);
+        // AI keys are separate and revocable.
+        let (_, k) = send(&api, plain("POST", "/api/v1/auth/tokens", Some(&session), serde_json::json!({"name":"Claude"}))).await;
+        let key = k["token"].as_str().unwrap().to_string();
+        assert!(key.starts_with("rtk_"));
+        assert_eq!(send(&api, plain("GET", "/api/v1/documents", Some(&key), serde_json::Value::Null)).await.0, StatusCode::OK);
+        let path = format!("/api/v1/auth/tokens/{}", k["id"].as_str().unwrap());
+        assert_eq!(send(&api, plain("DELETE", &path, Some(&session), serde_json::Value::Null)).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(send(&api, plain("GET", "/api/v1/documents", Some(&key), serde_json::Value::Null)).await.0, StatusCode::UNAUTHORIZED);
+    }
+    #[tokio::test]
+    async fn bases_are_listed_renamed_reordered_trashed_and_restored() {
+        let state = app();
+        state.import("default", records(3)).unwrap();
+        let api = router(state);
+        let (code, b) = send(&api, plain("POST", "/api/v1/documents", Some(TOKEN), serde_json::json!({"name":"项目","icon":"🚀"}))).await;
+        assert_eq!(code, StatusCode::OK);
+        let id = b["id"].as_str().unwrap().to_string();
+        let (_, list) = send(&api, plain("GET", "/api/v1/documents", Some(TOKEN), serde_json::Value::Null)).await;
+        let names: Vec<&str> = list.as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap()).collect();
+        assert_eq!(names.len(), 2);
+        assert_eq!(list[0]["records"], 3);
+        assert_eq!(list[1]["icon"], "🚀");
+        let (_, e) = send(&api, plain("PATCH", &format!("/api/v1/documents/{id}"), Some(TOKEN), serde_json::json!({"name":"新项目","icon":"📊"}))).await;
+        assert_eq!((e["name"].as_str(), e["icon"].as_str()), (Some("新项目"), Some("📊")));
+        // The name lives in the document: a client reading it sees the same.
+        let (_, doc) = send(&api, plain("GET", &format!("/api/v1/documents/{id}"), Some(TOKEN), serde_json::Value::Null)).await;
+        assert_eq!(doc["document"]["icon"], "📊");
+        let (_, list) = send(&api, plain("PUT", "/api/v1/workspace/order", Some(TOKEN), serde_json::json!({"ids":[id, "default"]}))).await;
+        assert_eq!(list[0]["id"].as_str(), Some(id.as_str()));
+        assert_eq!(send(&api, plain("DELETE", &format!("/api/v1/documents/{id}"), Some(TOKEN), serde_json::Value::Null)).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(send(&api, plain("GET", &format!("/api/v1/documents/{id}"), Some(TOKEN), serde_json::Value::Null)).await.0, StatusCode::NOT_FOUND);
+        let (_, trash) = send(&api, plain("GET", "/api/v1/trash", Some(TOKEN), serde_json::Value::Null)).await;
+        assert_eq!(trash[0]["id"].as_str(), Some(id.as_str()));
+        assert_eq!(send(&api, plain("POST", &format!("/api/v1/documents/{id}/restore"), Some(TOKEN), serde_json::Value::Null)).await.0, StatusCode::OK);
+        let (_, list) = send(&api, plain("GET", "/api/v1/documents", Some(TOKEN), serde_json::Value::Null)).await;
+        assert_eq!(list.as_array().unwrap().len(), 2);
+    }
+    #[tokio::test]
+    async fn mcp_tools_read_and_write_records_by_field_name() {
+        let state = app();
+        state.import("default", records(2)).unwrap();
+        let api = router(state);
+        let rpc = |id: u64, method: &str, params: serde_json::Value| plain("POST", "/mcp", Some(TOKEN), serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}));
+        let (_, init) = send(&api, rpc(1, "initialize", serde_json::json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}))).await;
+        assert_eq!(init["result"]["serverInfo"]["name"], "rutable");
+        assert_eq!(send(&api, plain("POST", "/mcp", Some(TOKEN), serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}))).await.0, StatusCode::ACCEPTED);
+        let (_, tools) = send(&api, rpc(2, "tools/list", serde_json::json!({}))).await;
+        assert!(tools["result"]["tools"].as_array().unwrap().len() >= 7);
+        let call = |id: u64, name: &str, args: serde_json::Value| rpc(id, "tools/call", serde_json::json!({"name":name,"arguments":args}));
+        let (_, bases) = send(&api, call(3, "list_bases", serde_json::json!({}))).await;
+        let table = bases["result"]["structuredContent"]["bases"][0]["tables"][0]["name"].as_str().unwrap().to_string();
+        let (_, d) = send(&api, call(4, "describe_table", serde_json::json!({"base_id":"default","table":table}))).await;
+        let fields = d["result"]["structuredContent"]["fields"].as_array().unwrap().clone();
+        let primary = fields[0]["name"].as_str().unwrap().to_string();
+        let (_, f) = send(&api, call(5, "create_field", serde_json::json!({"base_id":"default","table":table,"name":"状态","type":"single_select","options":["待办"]}))).await;
+        assert!(f["result"].get("isError").is_none(), "{f}");
+        let (_, c) = send(&api, call(6, "create_records", serde_json::json!({"base_id":"default","table":table,"records":[{primary.clone():"AI 写入","状态":"进行中"}]}))).await;
+        let rid = c["result"]["structuredContent"]["record_ids"][0].as_str().unwrap().to_string();
+        let (_, l) = send(&api, call(7, "list_records", serde_json::json!({"base_id":"default","table":table,"where":{primary.clone():"ai 写"}}))).await;
+        let got = &l["result"]["structuredContent"];
+        assert_eq!(got["total"], 1);
+        assert_eq!(got["records"][0]["fields"]["状态"], "进行中"); // option created on the fly
+        let (_, u) = send(&api, call(8, "update_records", serde_json::json!({"base_id":"default","table":table,"records":[{"record_id":rid,"fields":{"状态":null}}]}))).await;
+        assert_eq!(u["result"]["structuredContent"]["updated"], 1);
+        let (_, bad) = send(&api, call(9, "update_records", serde_json::json!({"base_id":"default","table":table,"records":[{"record_id":rid,"fields":{"不存在":1}}]}))).await;
+        assert_eq!(bad["result"]["isError"], true);
+        let (_, del) = send(&api, call(10, "delete_records", serde_json::json!({"base_id":"default","table":table,"record_ids":[rid]}))).await;
+        assert_eq!(del["result"]["structuredContent"]["deleted"], 1);
+        // Every write was an ordinary revision the desktop syncs.
+        let (_, snap) = send(&api, plain("GET", "/api/v1/documents/default", Some(TOKEN), serde_json::Value::Null)).await;
+        assert_eq!(snap["revision"], 5);
+        // A new base of its own, listed alongside and ready for tables.
+        let (_, nb) = send(&api, call(11, "create_base", serde_json::json!({"name":"AI 新建","icon":"🤖","table":"客户","fields":["名称","电话"]}))).await;
+        let nb = &nb["result"]["structuredContent"];
+        let bid = nb["base_id"].as_str().unwrap().to_string();
+        assert_eq!(nb["tables"].as_array().unwrap().len(), 1);
+        assert_eq!(nb["tables"][0]["name"], "客户");
+        let (_, d) = send(&api, call(12, "describe_table", serde_json::json!({"base_id":bid,"table":"客户"}))).await;
+        let d = &d["result"]["structuredContent"];
+        assert_eq!(d["records"], 0);
+        let names: Vec<&str> = d["fields"].as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["名称", "电话"]);
+        let (_, dup) = send(&api, call(15, "create_base", serde_json::json!({"name":"重复","fields":["a","a"]}))).await;
+        assert_eq!(dup["result"]["isError"], true);
+        let (_, bases) = send(&api, call(13, "list_bases", serde_json::json!({}))).await;
+        assert_eq!(bases["result"]["structuredContent"]["bases"][1]["name"], "AI 新建");
+        let (_, empty) = send(&api, call(14, "create_base", serde_json::json!({"name":"  "}))).await;
+        assert_eq!(empty["result"]["isError"], true);
+    }
+    #[tokio::test]
+    async fn waiting_clients_wake_on_a_change() {
+        let state = app();
+        state.import("default", records(1)).unwrap();
+        let api = router(state.clone());
+        let waiter = {
+            let api = api.clone();
+            tokio::spawn(async move { send(&api, plain("GET", "/api/v1/documents/default/wait?since=1&timeout=10", Some(TOKEN), serde_json::Value::Null)).await })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let started = std::time::Instant::now();
+        let (_, _) = send(&api, plain("PATCH", "/api/v1/documents/default", Some(TOKEN), serde_json::json!({"name":"改名"}))).await;
+        let (code, b) = waiter.await.unwrap();
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(b["changed"], true);
+        assert_eq!(b["revision"], 2);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let (_, b) = send(&api, plain("GET", "/api/v1/documents/default/wait?since=2&timeout=1", Some(TOKEN), serde_json::Value::Null)).await;
+        assert_eq!(b["changed"], false);
+    }
+    #[tokio::test]
+    async fn the_home_page_is_public_and_offers_setup() {
+        let api = router(app());
+        let r = api.oneshot(Request::builder().uri("/").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let html = String::from_utf8(to_bytes(r.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
+        assert!(html.contains("设置访问密码") && html.contains("客户端尚未发布"));
     }
 }

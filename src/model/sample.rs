@@ -24,6 +24,7 @@ pub fn members() -> Vec<Member> {
 pub fn empty() -> Base {
     let mut b = Base {
         name: "未命名多维表格".into(),
+        icon: String::new(),
         tables: vec![],
         dashboards: vec![],
         order: vec![],
@@ -380,6 +381,7 @@ pub fn sample() -> Base {
     let order = vec![tasks.id.clone(), projects.id.clone(), dashboard.id.clone()];
     Base {
         name: "产品研发项目管理".into(),
+        icon: String::new(),
         tables: vec![tasks, projects],
         dashboards: vec![dashboard],
         order,

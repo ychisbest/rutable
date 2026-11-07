@@ -19,16 +19,7 @@ fn run(base: &mut Base, wf_index: usize, record: &str) {
             let target = t.and_then(|t| t.record(record).map(|r| fill_template(base, t, r, url))).unwrap_or_default();
             crate::ui::widgets::shell_open(&target);
         }
-        Action::Notify { text } => {
-            let title = base
-                .table(&wf.table)
-                .map(|t| crate::model::value::record_title(base, t, record))
-                .unwrap_or_default();
-            let msg = format!("「{}」{}：{}", wf.name, title, text);
-            let st = crate::ui::state::st();
-            st.notices.update(|n| n.insert(0, msg.clone()));
-            st.toast(&msg);
-        }
+        Action::Notify { .. } => return,
     }
     base.workflows[wf_index].runs += 1;
 }
@@ -92,16 +83,11 @@ pub fn press_button(table: &str, field: &str, record: &str) {
             st.set_cells(table, &[(record.to_string(), target, Some(value))]);
             st.toast("已执行按钮操作");
         }
-        Action::OpenUrl { url } => {
+        Action::OpenUrl { url } if !url.trim().is_empty() => {
             let target = st.peek(|b| b.table(table).and_then(|t| t.record(record).map(|r| fill_template(b, t, r, &url)))).unwrap_or_default();
             crate::ui::widgets::shell_open(&target);
         }
-        Action::Notify { text } => {
-            let title = st.peek(|b| b.table(table).map(|t| crate::model::value::record_title(b, t, record))).unwrap_or_default();
-            let msg = format!("{title}：{text}");
-            st.notices.update(|n| n.insert(0, msg.clone()));
-            st.toast(&msg);
-        }
+        Action::OpenUrl { .. } | Action::Notify { .. } => st.toast("这个按钮还没有设置点击后的操作"),
     }
 }
 
@@ -119,7 +105,7 @@ pub fn describe(base: &Base, wf: &crate::model::Workflow) -> String {
                 .unwrap_or_default();
             format!("将「{}」设为 {}", fname(field), if shown.is_empty() { "空".into() } else { shown })
         }
-        Action::Notify { text } => format!("发送通知：{text}"),
+        Action::Notify { .. } => "无操作（通知功能已移除）".to_string(),
         Action::OpenUrl { url } => format!("打开链接：{url}"),
     };
     let _ = Value::Bool(true);

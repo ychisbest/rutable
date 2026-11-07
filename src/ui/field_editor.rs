@@ -453,11 +453,11 @@ fn button_settings(kind: Signal<FieldKind>, blabel: String, color: u8, action: c
     let kind_idx = match &action {
         Action::SetField { .. } => 0,
         Action::OpenUrl { .. } => 1,
-        Action::Notify { .. } => 2,
+        Action::Notify { .. } => 0,
     };
     let text0 = match &action {
         Action::OpenUrl { url } => url.clone(),
-        Action::Notify { text } => text.clone(),
+        Action::Notify { .. } => String::new(),
         Action::SetField { value, .. } => match value {
             crate::model::Value::Text(t) => t.clone(),
             v => {
@@ -485,7 +485,6 @@ fn button_settings(kind: Signal<FieldKind>, blabel: String, color: u8, action: c
         let cur = st().cur.get_untracked();
         let act = match idx {
             1 => Action::OpenUrl { url: txt },
-            2 => Action::Notify { text: txt },
             _ => {
                 let fid = target.or_else(|| fields.first().map(|f| f.0.clone())).unwrap_or_default();
                 let mut k = fields.iter().find(|f| f.0 == fid).map(|f| f.2.clone()).unwrap_or(FieldKind::Text);
@@ -525,8 +524,8 @@ fn button_settings(kind: Signal<FieldKind>, blabel: String, color: u8, action: c
         ))
         .child(label("点击后"))
         .child(widgets::dropdown(
-            move || ["修改当前记录", "打开链接", "发送通知"][kind_idx].to_string(),
-            || vec!["修改当前记录".into(), "打开链接".into(), "发送通知".into()],
+            move || ["修改当前记录", "打开链接"][kind_idx].to_string(),
+            || vec!["修改当前记录".into(), "打开链接".into()],
             move |i| apply(i, target2.clone(), arg.get_untracked()),
             348.0,
         ))
@@ -542,7 +541,7 @@ fn button_settings(kind: Signal<FieldKind>, blabel: String, color: u8, action: c
                 348.0,
             )
         }))
-        .child(widgets::text_field(arg, if kind_idx == 1 { "https://example.com/{名称}" } else { "值 / 通知内容" }).on_change(move |t: &str| {
+        .child(widgets::text_field(arg, if kind_idx == 1 { "https://example.com/{名称}" } else { "值" }).on_change(move |t: &str| {
             arg.set(t.to_string());
             apply3(kind_idx, target.clone(), t.to_string());
         }))

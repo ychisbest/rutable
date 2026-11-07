@@ -39,6 +39,9 @@ pub struct Member {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Base {
     pub name: String,
+    /// An emoji shown before the name in the list of bases ("" for the default icon).
+    #[serde(default)]
+    pub icon: String,
     pub tables: Vec<Table>,
     #[serde(default)]
     pub dashboards: Vec<Dashboard>,
@@ -398,7 +401,7 @@ impl KindTag {
             KindTag::Button => FieldKind::Button {
                 label: "点击".into(),
                 color: 0,
-                action: Action::Notify { text: "按钮已点击".into() },
+                action: Action::OpenUrl { url: String::new() },
             },
             KindTag::CreatedTime => FieldKind::CreatedTime { format: DateFormat::YmdSlash, time: true },
             KindTag::ModifiedTime => FieldKind::ModifiedTime { format: DateFormat::YmdSlash, time: true },
@@ -1182,7 +1185,7 @@ pub enum Trigger {
 pub enum Action {
     /// 修改记录: set a field to a value
     SetField { field: Id, value: Value },
-    /// 发送通知 (shown in the app's notification list)
+    /// Former 发送通知, removed: kept only so older documents still load; does nothing.
     Notify { text: String },
     /// 打开链接 (`{字段}` is replaced by the record's value)
     OpenUrl { url: String },

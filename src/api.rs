@@ -21,13 +21,16 @@ pub enum Error {
     Message(String),
     Conflict,
     NotFound,
+    /// The login ended (expired, revoked, or the password changed).
+    Unauthorized,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Message(s) => f.write_str(s),
             Self::Conflict => f.write_str("服务器数据同时发生变化，请重试"),
-            Self::NotFound => f.write_str("服务器中没有此文档，请先导入数据"),
+            Self::NotFound => f.write_str("服务器中没有此多维表格（可能已被删除）"),
+            Self::Unauthorized => f.write_str("登录已失效，请重新输入密码"),
         }
     }
 }
@@ -127,6 +130,70 @@ impl Config {
         check(&response)?;
         json(&mut response).map_err(|_| Error::Message("服务器保存响应无效".into()))
     }
+    /// The same server and login, another document.
+    pub fn with_document(&self, document: &str) -> Config {
+        Config { document: document.into(), ..self.clone() }
+    }
+    fn api(&self, path: &str) -> String {
+        format!("{}/api/v1{path}", self.url)
+    }
+    /// A JSON call to `path` (under /api/v1); errors carry the server's message.
+    fn call<T: serde::de::DeserializeOwned>(&self, method: &str, path: &str, body: Option<serde_json::Value>) -> Result<T> {
+        call(&self.agent, method, &self.api(path), Some(&self.token), body)
+    }
+    pub fn bases(&self) -> Result<Vec<BaseEntry>> {
+        self.call("GET", "/documents", None)
+    }
+    pub fn trash(&self) -> Result<Vec<BaseEntry>> {
+        self.call("GET", "/trash", None)
+    }
+    pub fn create_base(&self, name: &str, icon: &str) -> Result<BaseEntry> {
+        self.call("POST", "/documents", Some(serde_json::json!({"name": name, "icon": icon})))
+    }
+    pub fn update_base(&self, id: &str, name: Option<&str>, icon: Option<&str>) -> Result<BaseEntry> {
+        self.call("PATCH", &format!("/documents/{id}"), Some(serde_json::json!({"name": name, "icon": icon})))
+    }
+    pub fn delete_base(&self, id: &str) -> Result<()> {
+        self.call::<serde_json::Value>("DELETE", &format!("/documents/{id}"), None).map(|_| ())
+    }
+    pub fn restore_base(&self, id: &str) -> Result<BaseEntry> {
+        self.call("POST", &format!("/documents/{id}/restore"), None)
+    }
+    pub fn reorder_bases(&self, ids: &[String]) -> Result<Vec<BaseEntry>> {
+        self.call("PUT", "/workspace/order", Some(serde_json::json!({"ids": ids})))
+    }
+    /// A new key for an AI tool (MCP); the secret is shown only now.
+    pub fn create_ai_key(&self, name: &str) -> Result<String> {
+        let v: serde_json::Value = self.call("POST", "/auth/tokens", Some(serde_json::json!({"name": name})))?;
+        v["token"].as_str().map(str::to_string).ok_or_else(|| Error::Message("服务器没有返回密钥".into()))
+    }
+    pub fn ai_keys(&self) -> Result<Vec<serde_json::Value>> {
+        self.call("GET", "/auth/tokens", None)
+    }
+    pub fn delete_ai_key(&self, id: &str) -> Result<()> {
+        self.call::<serde_json::Value>("DELETE", &format!("/auth/tokens/{id}"), None).map(|_| ())
+    }
+    pub fn change_password(&self, current: &str, new: &str) -> Result<()> {
+        self.call::<serde_json::Value>("POST", "/auth/password", Some(serde_json::json!({"current": current, "new": new}))).map(|_| ())
+    }
+    pub fn logout(&self) -> Result<()> {
+        self.call::<serde_json::Value>("POST", "/auth/logout", None).map(|_| ())
+    }
+    /// Waits (up to 25 s) until the document is past `since`; its revision then.
+    pub fn wait(&self, since: u64) -> Result<u64> {
+        let mut response = self
+            .agent
+            .get(format!("{}/wait?since={since}&timeout=25", self.endpoint()))
+            .header("Authorization", self.auth())
+            .config()
+            .timeout_global(Some(Duration::from_secs(40)))
+            .build()
+            .call()
+            .map_err(network)?;
+        check(&response)?;
+        let v: serde_json::Value = json(&mut response).map_err(|_| Error::Message("服务器响应无效".into()))?;
+        Ok(v["revision"].as_u64().unwrap_or(since))
+    }
     pub fn upload(&self, path: &std::path::Path) -> Result<Attachment> {
         let metadata = std::fs::metadata(path).map_err(|_| Error::Message("无法读取所选文件".into()))?;
         if metadata.len() > 64 * 1024 * 1024 {
@@ -175,6 +242,84 @@ fn json<T: serde::de::DeserializeOwned>(response: &mut ureq::http::Response<ureq
     let bytes = response.body_mut().with_config().limit(64 * 1024 * 1024).read_to_vec().map_err(|_| ())?;
     serde_json::from_slice(&bytes).map_err(|_| ())
 }
+/// A base in the list.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct BaseEntry {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub icon: String,
+    pub revision: u64,
+    pub updated_at: i64,
+    pub tables: usize,
+    pub records: usize,
+    #[serde(default)]
+    pub deleted_at: Option<i64>,
+}
+
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(15))).max_redirects(0).http_status_as_error(false).build().into()
+}
+
+fn call<T: serde::de::DeserializeOwned>(agent: &ureq::Agent, method: &str, url: &str, token: Option<&str>, body: Option<serde_json::Value>) -> Result<T> {
+    let mut req = ureq::http::Request::builder().method(method).uri(url);
+    if let Some(t) = token {
+        req = req.header("Authorization", format!("Bearer {t}"));
+    }
+    let body = body.map(|b| b.to_string()).unwrap_or_default();
+    let req = req.header("Content-Type", "application/json").body(body).map_err(|_| Error::Message("请求无效".into()))?;
+    let mut response = agent.run(req).map_err(network)?;
+    let code = response.status().as_u16();
+    if code == 204 {
+        return serde_json::from_value(serde_json::Value::Null).map_err(|_| Error::Message("服务器响应无效".into()));
+    }
+    if !(200..300).contains(&code) {
+        // The server explains (wrong password, locked out, ...).
+        let msg = json::<serde_json::Value>(&mut response).ok().and_then(|v| v["error"].as_str().map(str::to_string));
+        return Err(match (code, msg) {
+            (401, Some(m)) if m != "unauthorized" => Error::Message(m),
+            (401 | 403, _) => Error::Unauthorized,
+            (404, _) => Error::NotFound,
+            (_, Some(m)) => Error::Message(m),
+            _ => Error::Message(format!("服务器请求失败（HTTP {code}）")),
+        });
+    }
+    json(&mut response).map_err(|_| Error::Message("服务器响应无效".into()))
+}
+
+/// Before logging in: has the server's password been set?
+pub fn password_set(url: &str) -> Result<bool> {
+    let v: serde_json::Value = call(&agent(), "GET", &format!("{}/api/v1/auth/status", url.trim_end_matches('/')), None, None)?;
+    Ok(v["password_set"].as_bool().unwrap_or(false))
+}
+
+fn device() -> String {
+    std::env::var("COMPUTERNAME").map(|c| format!("Windows · {c}")).unwrap_or_else(|_| "Windows".into())
+}
+
+/// Sets the first password (the server key proves ownership); a login credential.
+pub fn setup(url: &str, server_key: &str, password: &str) -> Result<String> {
+    let v: serde_json::Value = call(
+        &agent(),
+        "POST",
+        &format!("{}/api/v1/auth/setup", url.trim_end_matches('/')),
+        None,
+        Some(serde_json::json!({"setup_key": server_key, "password": password, "device": device()})),
+    )?;
+    v["token"].as_str().map(str::to_string).ok_or_else(|| Error::Message("服务器没有返回登录凭证".into()))
+}
+
+pub fn login(url: &str, password: &str) -> Result<String> {
+    let v: serde_json::Value = call(
+        &agent(),
+        "POST",
+        &format!("{}/api/v1/auth/login", url.trim_end_matches('/')),
+        None,
+        Some(serde_json::json!({"password": password, "device": device()})),
+    )?;
+    v["token"].as_str().map(str::to_string).ok_or_else(|| Error::Message("服务器没有返回登录凭证".into()))
+}
+
 fn network(_: ureq::Error) -> Error {
     Error::Message("无法连接服务器，未保存的修改仍在当前窗口内存中".into())
 }
@@ -182,7 +327,7 @@ fn check(response: &ureq::http::Response<ureq::Body>) -> Result<()> {
     let code = response.status().as_u16();
     match code {
         200..=299 => Ok(()),
-        401 | 403 => Err(Error::Message("服务器访问密钥无效或无访问权限".into())),
+        401 | 403 => Err(Error::Unauthorized),
         409 => Err(Error::Conflict),
         404 => Err(Error::NotFound),
         413 => Err(Error::Message("提交内容过大".into())),

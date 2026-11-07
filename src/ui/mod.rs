@@ -13,6 +13,8 @@ pub mod gallery;
 pub mod gantt;
 pub mod grid;
 pub mod header;
+pub mod home;
+pub mod login;
 pub mod icons;
 pub mod io;
 pub mod kanban;

@@ -29,15 +29,29 @@ pub enum Popup {
     More { x: f32, y: f32 },
     Shortcuts,
     Workflows,
-    Server,
-    Permissions,
-    Share,
-    Identity { x: f32, y: f32 },
+    SaveFailed,
+    BaseMenu { base: Id, name: String, x: f32, y: f32 },
+    EmojiPicker { base: Id, x: f32, y: f32 },
+    Account { x: f32, y: f32 },
+    AiKeys,
+    ChangePassword,
     Confirm { title: String, text: String, action: Confirm },
+}
+
+/// What the window shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Screen {
+    /// Setting the first password or logging in.
+    Login,
+    /// The list of bases.
+    Home,
+    /// Inside a base.
+    Base,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Confirm {
+    DeleteBase(Id, String),
     ReloadServer,
     DiscardAndClose,
     DeleteField(Id),
@@ -48,6 +62,19 @@ pub enum Confirm {
 
 #[derive(Clone, Copy)]
 pub struct St {
+    /// The app's root: tasks run under it, so a screen they start from
+    /// (the list of bases) closing does not cancel them.
+    root: Owner,
+    pub screen: Signal<Screen>,
+    /// The server and login, without a document (the list of bases).
+    pub account: Stored<Option<crate::api::Config>>,
+    pub bases: Signal<Vec<crate::api::BaseEntry>>,
+    pub trash: Signal<Vec<crate::api::BaseEntry>>,
+    pub bases_loading: Signal<bool>,
+    going_home: Stored<bool>,
+    /// The wait for server changes: (generation, the revision we have).
+    watch: Stored<(std::sync::Arc<std::sync::atomic::AtomicU64>, std::sync::Arc<std::sync::atomic::AtomicU64>)>,
+    remote: Stored<Option<async_channel::Sender<u64>>>,
     pub doc: Stored<Base>,
     pub cloud_busy: Signal<bool>,
     pub cloud_status: Signal<String>,
@@ -78,7 +105,6 @@ pub struct St {
     pub sidebar: Signal<bool>,
     /// Records ticked in the grid's row header.
     pub checked: Signal<Vec<Id>>,
-    pub notices: Signal<Vec<String>>,
     /// The window's size in points.
     pub window: Signal<(f32, f32)>,
     saving: Stored<bool>,
@@ -97,10 +123,19 @@ pub fn st() -> St {
 impl St {
     pub fn init() -> St {
         let base = sample::empty();
-        let config=crate::api::Config::from_env().ok();
+        let config: Option<crate::api::Config> = None;
         let first = base.sidebar().first().cloned().unwrap_or_default();
         let view = base.table(&first).and_then(|t| t.views.first()).map(|v| v.id.clone()).unwrap_or_default();
         let s = St {
+            root: Owner::current(),
+            screen: signal(Screen::Login),
+            account: stored(None),
+            bases: signal(vec![]),
+            trash: signal(vec![]),
+            bases_loading: signal(false),
+            going_home: stored(false),
+            watch: stored((Default::default(), Default::default())),
+            remote: stored(None),
             cloud_status: signal("尚未连接服务器".into()),
             loaded: signal(false),
             uploads: signal(0),
@@ -125,7 +160,6 @@ impl St {
             expanded: signal(None),
             sidebar: signal(true),
             checked: signal(vec![]),
-            notices: signal(vec![]),
             window: signal((1440.0, 900.0)),
             saving: stored(false),
             dirty_at: stored(0),
@@ -161,16 +195,6 @@ impl St {
             self.doc.with(|b|*b=snapshot);self.undo.with(|u|{u.pop();});
             self.toast("请先连接服务器并读取文档");self.rev.update(|r|*r+=1);return out;
         }
-        // 高级权限: an identity that may only read the open table changes nothing.
-        if self.read_only() {
-            let prev = self.undo.with(|u| u.pop());
-            if let Some(prev) = prev {
-                self.doc.with(|b| *b = prev);
-            }
-            self.toast("当前身份对该数据表只有阅读权限");
-            self.rev.update(|r| *r += 1);
-            return out;
-        }
         self.doc.with(|b| b.sync_option_sources());
         self.changed();
         out
@@ -181,21 +205,6 @@ impl St {
         self.rev.update(|r| *r += 1);
         self.schedule_save();
         self.cloud_status.set("修改尚未保存到服务器".into());
-    }
-
-    /// The current identity may not edit the open table.
-    pub fn read_only(&self) -> bool {
-        let cur = self.cur.get_untracked();
-        self.doc.with(|b| b.table(&cur).is_some() && b.perm(&b.me, &cur) != crate::model::Perm::Edit)
-    }
-
-    /// Acts as `member` (高级权限 preview); not an undoable change.
-    pub fn switch_identity(&self, member: &str) {
-        self.doc.with(|b| b.me = member.to_string());
-        self.changed();
-        self.fix_selection();
-        let name = self.peek(|b| b.member_name(member));
-        self.toast(&format!("当前身份：{name}"));
     }
 
     pub fn can_undo(&self) -> bool {
@@ -266,6 +275,7 @@ impl St {
         if self.toast.get_untracked().is_some()&&now>self.toast_until.with(|t|*t) {self.toast.set(None);}
         if self.cloud_busy.get_untracked()||self.server.with(|c|c.is_none()) {return}
         let dirty=self.saving.with(|v|*v);
+        if self.screen.get_untracked()!=Screen::Base {return}
         if (dirty&&now-self.dirty_at.with(|t|*t)>350 || !dirty&&now>=self.cloud_next.with(|t|*t))
             && super::grid::grid().is_none_or(|g|g.editing.get_untracked().is_none()) {
             self.start_cloud_sync();
@@ -276,8 +286,104 @@ impl St {
     pub fn connect_server(&self,config:crate::api::Config) {
         if self.cloud_busy.get_untracked()||self.uploads.get_untracked()>0 {self.toast("服务器请求或附件上传执行中，请稍候");return}
         if self.is_dirty() {self.toast("请先保存当前修改，再切换连接");return}
-        self.server_url.set(config.url.clone());self.server.with(|c|*c=Some(config));
-        self.baseline.with(|b|*b=None);self.loaded.set(false);self.cloud_error.set(None);self.start_cloud_sync();
+        self.server_url.set(config.url.clone());self.server.with(|c|*c=Some(config.clone()));
+        // Another base: nothing of the last one may be shown, or undone into it.
+        self.doc.with(|b|*b=sample::empty());self.rev.update(|r|*r+=1);
+        self.undo.with(|u|u.clear());self.redo.with(|u|u.clear());self.expanded.set(None);self.checked.set(vec![]);self.search.set(String::new());
+        self.baseline.with(|b|*b=None);self.loaded.set(false);self.cloud_error.set(None);
+        self.screen.set(Screen::Base);self.start_watch(config);self.start_cloud_sync();
+    }
+    /// A thread that waits on the server for changes of the open base and
+    /// wakes the window, so others' edits (an AI's too) show in about a second.
+    fn start_watch(&self,config:crate::api::Config) {
+        use std::sync::atomic::Ordering;
+        let (r#gen,rev)=self.watch.with(|w|w.clone());
+        let mine=r#gen.fetch_add(1,Ordering::SeqCst)+1;rev.store(0,Ordering::SeqCst);
+        let Some(tx)=self.remote.with(|r|r.clone()) else {return};
+        std::thread::spawn(move || {
+            let mut seen=0u64;
+            while r#gen.load(Ordering::SeqCst)==mine {
+                let have=rev.load(Ordering::SeqCst).max(seen);
+                if have==0 {std::thread::sleep(std::time::Duration::from_millis(300));continue}
+                match config.wait(have) {
+                    Ok(now) if now!=have => {seen=now;if r#gen.load(Ordering::SeqCst)==mine {let _=tx.send_blocking(now);}}
+                    Ok(_)=>{}
+                    Err(_)=>std::thread::sleep(std::time::Duration::from_secs(3)),
+                }
+            }
+        });
+    }
+    fn stop_watch(&self) {
+        self.watch.with(|w|w.0.fetch_add(1,std::sync::atomic::Ordering::SeqCst));
+    }
+    /// The root listens for the watcher's news.
+    pub fn listen_remote(&self) {
+        let (tx,rx)=async_channel::unbounded::<u64>();self.remote.with(|r|*r=Some(tx));
+        let s=*self;
+        self.spawn(async move {
+            while let Ok(rev)=rx.recv().await {
+                if s.screen.get_untracked()!=Screen::Base||s.server_revision().is_some_and(|r|r>=rev) {continue}
+                if s.cloud_busy.get_untracked() {s.sync_now.with(|v|*v=true);} else {s.start_cloud_sync();}
+            }
+        });
+    }
+    /// Runs `future` under the app's root, not the screen it starts from.
+    pub fn spawn(&self,future:impl std::future::Future<Output=()>+'static) {
+        self.root.run(move || {spawn(future);});
+    }
+    /// Logged in: the list of bases (or straight into `open`).
+    pub fn signed_in(&self,account:crate::api::Config,open:Option<String>) {
+        self.account.with(|a|*a=Some(account.clone()));self.popup.set(None);
+        match open {
+            Some(id)=>self.connect_server(account.with_document(&id)),
+            None=>{self.screen.set(Screen::Home);self.load_bases();}
+        }
+    }
+    /// The login ended: back to the password.
+    pub fn signed_out(&self) {
+        if let Some(a)=self.account.with(|a|a.take()) {crate::login::forget(&a.url);}
+        self.stop_watch();self.server.with(|c|*c=None);self.saving.with(|v|*v=false);self.loaded.set(false);
+        self.baseline.with(|b|*b=None);self.popup.set(None);self.bases.set(vec![]);self.screen.set(Screen::Login);
+    }
+    /// Reads the list of bases and the trash.
+    pub fn load_bases(&self) {
+        let Some(account)=self.account.with(|a|a.clone()) else {return};
+        self.bases_loading.set(true);
+        let s=*self;
+        self.background(move || Ok((account.bases()?,account.trash()?)), move |(list,trash)| {s.bases.set(list);s.trash.set(trash);});
+    }
+    /// Runs `job` off the window thread; `done` with its result on it. A
+    /// failure shows as a toast (an ended login goes back to the password).
+    pub fn background<T:Send+'static>(&self,job:impl FnOnce()->Result<T,crate::api::Error>+Send+'static,done:impl FnOnce(T)+'static) {
+        let (tx,rx)=async_channel::bounded(1);
+        std::thread::spawn(move || {let _=tx.send_blocking(job());});
+        let s=*self;
+        self.spawn(async move {
+            let r=rx.recv().await;s.bases_loading.set(false);
+            match r {
+                Ok(Ok(v))=>done(v),
+                Ok(Err(crate::api::Error::Unauthorized))=>s.signed_out(),
+                Ok(Err(e))=>s.toast(&e.to_string()),
+                Err(_)=>s.toast("请求中断"),
+            }
+        });
+    }
+    /// Back to the list of bases, once the open one is saved.
+    pub fn go_home(&self) {
+        if let Some(g)=super::grid::grid() {if g.editing.get_untracked().is_some(){super::grid::edit::commit(g);}}
+        if self.uploads.get_untracked()>0 {self.toast("附件上传中，请稍候");return}
+        if self.is_dirty()||self.cloud_busy.get_untracked() {
+            self.going_home.with(|v|*v=true);self.cloud_status.set("正在保存到服务器…".into());
+            if !self.cloud_busy.get_untracked() {self.save_now();}
+            return;
+        }
+        self.finish_home();
+    }
+    fn finish_home(&self) {
+        self.going_home.with(|v|*v=false);self.stop_watch();self.server.with(|c|*c=None);
+        self.loaded.set(false);self.baseline.with(|b|*b=None);self.popup.set(None);self.expanded.set(None);
+        self.undo.with(|u|u.clear());self.redo.with(|u|u.clear());
+        self.screen.set(Screen::Home);self.load_bases();
     }
     pub fn reload_server(&self) {
         if self.cloud_busy.get_untracked() {self.toast("服务器请求执行中，请稍候");return}
@@ -285,13 +391,13 @@ impl St {
     }
     pub fn start_cloud_sync(&self) {
         if self.cloud_busy.get_untracked() {return}
-        let Some(config)=self.server.with(|c|c.clone()) else {self.popup.set(Some(Popup::Server));return};
+        let Some(config)=self.server.with(|c|c.clone()) else {return};
         let submitted=self.peek(Clone::clone);let baseline=self.baseline.with(|v|v.clone());let dirty=self.is_dirty();
         self.cloud_busy.set(true);self.cloud_status.set(if dirty {"正在保存到服务器…"}else{"正在读取服务器…"}.into());
         let (tx,rx)=async_channel::bounded(1);let request=submitted.clone();
         std::thread::spawn(move || {let result=crate::api::sync(&config,baseline.as_ref(),&request,dirty);let _=tx.send_blocking(result);});
         let s=*self;
-        spawn(async move {
+        self.spawn(async move {
             match rx.recv().await {
                 Ok(Ok(crate::api::Outcome::Unchanged))=>{s.cloud_error.set(None);s.cloud_status.set(if s.is_dirty(){"修改尚未保存到服务器"}else{"已与服务器同步"}.into());},
                 Ok(Ok(outcome@(crate::api::Outcome::Loaded(_)|crate::api::Outcome::Cached(_))))=>{
@@ -303,6 +409,7 @@ impl St {
                         Ok(document)=>{
                             let dirty=!crate::model::sync::diff(&snapshot.document,&document).is_empty();
                             let remote_changed=!crate::model::sync::diff(&submitted,&snapshot.document).is_empty();
+                            s.watch.with(|w|w.1.store(snapshot.revision,std::sync::atomic::Ordering::SeqCst));
                             s.doc.with(|b|*b=document);s.baseline.with(|b|*b=Some(snapshot));s.loaded.set(true);
                             s.saving.with(|v|*v=dirty);s.cloud_error.set(None);
                             s.cloud_status.set(if cached {"已显示本机副本，正在与服务器同步…"} else if dirty {"修改尚未保存到服务器"}else{"已保存到服务器"}.into());
@@ -314,15 +421,22 @@ impl St {
                         Err(error)=>s.sync_failed(&error.to_string()),
                     }
                 }
+                Ok(Err(crate::api::Error::Unauthorized)) if !s.is_dirty() => {s.cloud_busy.set(false);s.signed_out();return}
                 Ok(Err(error))=>s.sync_failed(&error.to_string()),
                 Err(_)=>s.sync_failed("服务器请求中断，修改仍在内存中"),
             }
             s.cloud_busy.set(false);
             // After showing the kept copy, catch up with the server at once.
             let soon=s.sync_now.with(|v|std::mem::take(v));
-            s.cloud_next.with(|t|*t=crate::model::now_ms()+if soon {0} else {3000});
+            // Changes arrive through the watcher; this is only a fallback.
+            s.cloud_next.with(|t|*t=crate::model::now_ms()+if soon {0} else {30000});
+            if s.going_home.with(|v|*v) {
+                if s.cloud_error.get_untracked().is_some() {s.going_home.with(|v|*v=false);}
+                else if !s.is_dirty() {s.finish_home();return}
+                else {s.start_cloud_sync();}
+            }
             if s.closing.with(|v|*v) {
-                if s.cloud_error.get_untracked().is_some() {s.closing.with(|v|*v=false);s.popup.set(Some(Popup::Server));}
+                if s.cloud_error.get_untracked().is_some() {s.closing.with(|v|*v=false);s.popup.set(Some(Popup::SaveFailed));}
                 else if s.uploads.get_untracked()>0 {}
                 else if !s.is_dirty() {crate::win::close_now();}
                 else {s.start_cloud_sync();}
@@ -336,7 +450,7 @@ impl St {
     pub fn save_now(&self) {self.start_cloud_sync();}
     pub fn upload_failed(&self,error:&str) {
         self.cloud_error.set(Some(error.into()));self.cloud_status.set("附件上传未完成".into());
-        if self.closing.with(|v|*v) {self.closing.with(|v|*v=false);self.popup.set(Some(Popup::Server));}
+        if self.closing.with(|v|*v) {self.closing.with(|v|*v=false);self.popup.set(Some(Popup::SaveFailed));}
     }
     pub fn upload_finished(&self) {
         self.uploads.update(|v|*v=v.saturating_sub(1));
